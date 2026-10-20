@@ -1,0 +1,36 @@
+[user]
+	email = 128995129+berndof@users.noreply.github.com
+	name = berndof
+[credential "https://github.com"]
+	helper = 
+	helper = !/usr/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/usr/bin/gh auth git-credential
+[core]
+	editor = micro
+	pager = delta
+[init]
+	defaultBranch = main
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	side-by-side = true
+	line-numbers = true
+	syntax-theme = Solarized (dark)
+	minus-style = syntax "#3b1c22"
+	minus-emph-style = syntax "#6e2932"
+	plus-style = syntax "#1d3528"
+	plus-emph-style = syntax "#2f593f"
+	hunk-header-decoration-style = "#073642" box ul
+	file-style = "#268bd2" bold
+	file-decoration-style = "#586e75" ul
+	line-numbers-left-style = "#586e75"
+	line-numbers-right-style = "#586e75"
+	line-numbers-minus-style = "#dc322f"
+	line-numbers-plus-style = "#859900"
+[merge]
+	conflictstyle = zdiff3
+[diff]
+	colorMoved = default

@@ -1,3 +1,8 @@
 {
-    "mkparents": true
+    "colorscheme": "solarized",
+    "hlsearch": true,
+    "mkparents": true,
+    "scrollbar": true,
+    "tabsize": 4,
+    "tabstospaces": true
 }

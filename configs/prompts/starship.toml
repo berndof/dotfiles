@@ -16,11 +16,25 @@ $cmd_duration\
 $time
 """
 
-palette = "tactical"
+palette = "solarized"
 
 # ========================================
-# PALETTE
+# PALETTES (solarized & tactical)
 # ========================================
+
+[palettes.solarized]
+fg        = "#93a1a1"
+blue      = "#268bd2"
+cyan      = "#2aa198"
+green     = "#859900"
+amber     = "#b58900"
+red       = "#dc322f"
+gray      = "#586e75"
+soft      = "#839496"
+
+bg1       = "#002b36"
+bg2       = "#073642"
+bg3       = "#0d4352"
 
 [palettes.tactical]
 fg        = "#d6deeb"

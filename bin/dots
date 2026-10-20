@@ -222,7 +222,11 @@ cmd_diff() {
       if ! cmp -s "$repo_file" "$target_file"; then
         found_diff=1
         printf "\n${C_BOLD}${C_MAUVE}═══ Diff [%s]: repo (%s) vs live (~/%s) ═══${C_RESET}\n" "$comp" "$repo_rel" "$target_rel"
-        git diff --no-index --color=always "$repo_file" "$target_file" || true
+        if command -v delta >/dev/null 2>&1; then
+          git diff --no-index "$repo_file" "$target_file" | delta --paging=never || true
+        else
+          git diff --no-index --color=always "$repo_file" "$target_file" || true
+        fi
       fi
     elif [[ ! -f "$repo_file" && -f "$target_file" ]]; then
       found_diff=1
@@ -574,18 +578,24 @@ cmd_doctor() {
   }
 
   printf "${C_BOLD}1. Core Shell & CLI Tools:${C_RESET}\n"
-  check_bin zsh      "Interactive shell"
-  check_bin git      "Version control"
-  check_bin eza      "Modern ls replacement with icons/git"
-  check_bin fzf      "Fuzzy finder (fzf-tab)"
-  check_bin zoxide   "Smart directory jumper" "$HOME/.local/bin/zoxide"
-  check_bin atuin    "Magical shell history" "$HOME/.atuin/bin/atuin"
-  check_bin direnv   "Per-directory environment loader"
-  check_bin micro    "Default terminal editor"
-  check_bin btop     "System resource monitor"
-  check_bin starship "Alternative cross-shell prompt"
-  check_bin gh       "GitHub CLI"
-  check_bin uv       "Fast Python package/tool manager" "$HOME/.local/bin/uv"
+  check_bin zsh       "Interactive shell"
+  check_bin git       "Version control"
+  check_bin rg        "Fast line-oriented search" "$HOME/.local/bin/rg"
+  check_bin fd        "Simple, fast alternative to find" "$HOME/.local/bin/fd"
+  check_bin bat       "Cat clone with syntax highlighting" "$HOME/.local/bin/bat"
+  check_bin delta     "Syntax-highlighting pager for git" "$HOME/.local/bin/delta"
+  check_bin eza       "Modern ls replacement with icons/git"
+  check_bin fzf       "Fuzzy finder (fzf-tab)"
+  check_bin zoxide    "Smart directory jumper" "$HOME/.local/bin/zoxide"
+  check_bin atuin     "Magical shell history" "$HOME/.atuin/bin/atuin"
+  check_bin direnv    "Per-directory environment loader"
+  check_bin micro     "Default terminal editor"
+  check_bin btop      "System resource monitor"
+  check_bin duf       "Disk usage/free utility" "$HOME/.local/bin/duf"
+  check_bin fastfetch "Neofetch-like fast system overview"
+  check_bin starship  "Alternative cross-shell prompt"
+  check_bin gh        "GitHub CLI"
+  check_bin uv        "Fast Python package/tool manager" "$HOME/.local/bin/uv"
 
   printf "\n${C_BOLD}2. Shell Plugin Manager & Fonts:${C_RESET}\n"
   local zinit_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"

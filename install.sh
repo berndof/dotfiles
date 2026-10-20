@@ -28,8 +28,8 @@ ${C_BOLD}USAGE:${C_RESET}
 
 ${C_BOLD}FLAGS:${C_RESET}
   --all        Run full setup: packages + cli tools + fonts + apply configs (default if no flags)
-  --packages   Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza)
-  --cli        Install modern CLI tools (zinit, zoxide, atuin, starship)
+  --packages   Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza, rg, fd, bat, delta, duf, ncdu)
+  --cli        Install modern CLI tools in ~/.local/bin (zinit, zoxide, atuin, starship, rg, fd, bat, delta, duf, ncdu)
   --fonts      Install JetBrainsMono Nerd Font & Noto Color Emoji
   --apply      Link 'dots' CLI into ~/.local/bin and apply tracked configs to ~/
   --shell      Set Zsh as the default OS login shell (chsh)
@@ -43,7 +43,10 @@ install_os_packages() {
     sudo apt-get update -qq
     sudo apt-get install -y \
       zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop fonts-noto-color-emoji
+      fzf direnv micro btop ripgrep fd-find bat duf ncdu fonts-noto-color-emoji
+
+    # git-delta on Ubuntu 24.04+ / Debian 13+
+    sudo apt-get install -y git-delta 2>/dev/null || true
 
     # Install eza (via apt on newer Ubuntu/Debian or official gpg repo fallback)
     if ! command -v eza >/dev/null 2>&1; then
@@ -56,23 +59,76 @@ install_os_packages() {
         sudo apt-get update -qq && sudo apt-get install -y eza
       fi
     fi
+
+    # Normalize Debian/Ubuntu binary names (fdfind -> fd, batcat -> bat)
+    mkdir -p "$HOME/.local/bin"
+    command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 && ln -sfn "$(command -v fdfind)" "$HOME/.local/bin/fd"
+    command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1 && ln -sfn "$(command -v batcat)" "$HOME/.local/bin/bat"
   elif command -v pacman >/dev/null 2>&1; then
     sudo pacman -Sy --needed --noconfirm \
       zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop eza noto-fonts-emoji
+      fzf direnv micro btop eza ripgrep fd bat git-delta duf ncdu noto-fonts-emoji
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y \
       zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop eza google-noto-emoji-color-fonts
+      fzf direnv micro btop eza ripgrep fd-find bat git-delta duf ncdu google-noto-emoji-color-fonts
   else
-    warn "Unsupported package manager. Please install zsh, git, curl, fzf, direnv, micro, btop, eza manually."
+    warn "Unsupported package manager. Falling back to user-space binary installation (--cli)."
   fi
   ok "OS packages ready."
 }
 
+# Helper to install a prebuilt GitHub release tarball into ~/.local/bin (zero sudo required)
+install_github_binary() {
+  local bin_name="$1"
+  local repo="$2"
+  local asset_regex="$3"
+  local inner_bin="${4:-$bin_name}"
+
+  if command -v "$bin_name" >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/$bin_name" ]]; then
+    ok "$bin_name already installed."
+    return 0
+  fi
+
+  info "Installing $bin_name from github.com/$repo..."
+  local tmp_dir
+  tmp_dir="$(mktemp -d /tmp/dots-bin.XXXXXX)"
+  local download_url=""
+
+  download_url="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
+    | grep -oE "https://github.com/${repo}/releases/download/[^\"]*${asset_regex}" \
+    | head -n1 || true)"
+
+  if [[ -z "$download_url" ]]; then
+    warn "Could not resolve release URL for $bin_name ($repo)."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  local archive="$tmp_dir/archive"
+  curl -fsSL "$download_url" -o "$archive"
+
+  if [[ "$download_url" == *.tar.gz || "$download_url" == *.tgz ]]; then
+    tar -xzf "$archive" -C "$tmp_dir"
+  elif [[ "$download_url" == *.zip ]]; then
+    unzip -qo "$archive" -d "$tmp_dir"
+  fi
+
+  local found_bin
+  found_bin="$(find "$tmp_dir" -type f -name "$inner_bin" | head -n1 || true)"
+  if [[ -n "$found_bin" ]]; then
+    install -m 0755 "$found_bin" "$HOME/.local/bin/$bin_name"
+    ok "$bin_name installed to ~/.local/bin/$bin_name"
+  else
+    warn "Binary '$inner_bin' not found inside archive for $bin_name"
+  fi
+  rm -rf "$tmp_dir"
+}
+
 install_cli_tools() {
-  info "Checking modern CLI tools (Zinit, Zoxide, Atuin, Starship)..."
+  info "Checking modern CLI tools (Zinit, Zoxide, Atuin, Starship & Modern Unix Kit)..."
   mkdir -p "$HOME/.local/bin"
+  export PATH="$HOME/.local/bin:$PATH"
 
   # 1. Zinit
   local zinit_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
@@ -103,13 +159,27 @@ install_cli_tools() {
     ok "atuin already installed."
   fi
 
-  # 4. Starship (optional alternative prompt)
+  # 4. Starship (alternative prompt)
   if ! command -v starship >/dev/null 2>&1; then
     info "Installing starship prompt into ~/.local/bin..."
     curl -sS https://starship.rs/install.sh | sh -s -- -y -b "$HOME/.local/bin"
     ok "starship installed."
   else
     ok "starship already installed."
+  fi
+
+  # 5. Modern Unix Kit (x86_64 Linux static binaries into ~/.local/bin if not installed via OS)
+  if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+    # Normalize Debian/Ubuntu names first if present
+    command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 && ln -sfn "$(command -v fdfind)" "$HOME/.local/bin/fd"
+    command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1 && ln -sfn "$(command -v batcat)" "$HOME/.local/bin/bat"
+
+    install_github_binary "rg"    "BurntSushi/ripgrep"   "x86_64-unknown-linux-musl\.tar\.gz" "rg"
+    install_github_binary "fd"    "sharkdp/fd"           "x86_64-unknown-linux-musl\.tar\.gz" "fd"
+    install_github_binary "bat"   "sharkdp/bat"          "x86_64-unknown-linux-musl\.tar\.gz" "bat"
+    install_github_binary "delta" "dandavison/delta"     "x86_64-unknown-linux-musl\.tar\.gz" "delta"
+    install_github_binary "duf"   "muesli/duf"           "linux_x86_64\.tar\.gz"              "duf"
+    install_github_binary "ncdu"  "rofl0r/ncdu"          "linux-x86_64-musl\.tar\.gz"         "ncdu" || true
   fi
 }
 
