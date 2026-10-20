@@ -1,0 +1,20 @@
+# OS / Editor artifacts
+.DS_Store
+*.swp
+*.bak
+*~
+
+# Compiled Zsh files
+*.zwc
+*.zwc.old
+.zcompdump*
+
+# Never track history, credentials, or local caches
+.zhistory
+.zsh_history
+*history*
+*.key
+*token*
+*secret*
+.env
+.env.*

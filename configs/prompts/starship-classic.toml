@@ -1,0 +1,163 @@
+"$schema" = 'https://starship.rs/config-schema.json'
+
+add_newline = true
+
+format = """
+$directory$git_branch$git_status$fill$os$username$hostname
+$character
+"""
+
+right_format = """
+$python\
+$nodejs\
+$rust\
+$package\
+$cmd_duration\
+$time
+"""
+
+palette = "tactical"
+
+# ========================================
+# PALETTE
+# ========================================
+
+[palettes.tactical]
+fg        = "#d6deeb"
+blue      = "#82aaff"
+cyan      = "#89ddff"
+green     = "#c3e88d"
+amber     = "#f2c38f"
+red       = "#f07178"
+gray      = "#637777"
+soft      = "#a6accd"
+
+bg1       = "#1f2430"
+bg2       = "#252b3b"
+bg3       = "#2e3445"
+
+# ========================================
+# FILL
+# ========================================
+
+[fill]
+symbol = " "
+
+# ========================================
+# DIRECTORY
+# ========================================
+
+[directory]
+style = "fg:blue bold"
+format = "[](fg:bg2)[ $path](fg:blue bg:bg2)[](fg:bg2) "
+truncation_length = 2
+truncate_to_repo = true
+home_symbol = "~"
+
+# ========================================
+# GIT
+# ========================================
+
+[git_branch]
+symbol = ""
+style = "fg:green"
+format = "[](fg:bg3)[ $symbol $branch ](fg:green bg:bg3)"
+
+[git_status]
+style = "fg:amber"
+format = "[$all_status$ahead_behind ]($style bg:bg3)[](fg:bg3)"
+
+modified = "● "
+staged = "✚ "
+untracked = "◌ "
+deleted = "✕ "
+
+ahead = "⇡${count} "
+behind = "⇣${count} "
+
+# ========================================
+# SYSTEM INFO
+# ========================================
+
+[os]
+disabled = false
+style = "fg:cyan bg:bg2"
+format = "[](fg:bg2)[ $symbol ]($style)"
+
+[os.symbols]
+Arch = ""
+Ubuntu = ""
+Fedora = ""
+Debian = ""
+Windows = "�"
+Macos = "�"
+
+[username]
+show_always = true
+style_user = "fg:fg bg:bg2"
+style_root = "fg:red bg:bg2 bold"
+format = "[ $user ]($style)"
+
+[hostname]
+ssh_only = false
+style = "fg:amber bg:bg2"
+format = "[@ $hostname ]($style)[](fg:bg2)"
+
+# ========================================
+# PROMPT
+# ========================================
+
+[character]
+success_symbol = "[▶](fg:green bold)"
+error_symbol = "[▶](fg:red bold)"
+vimcmd_symbol = "[❮](fg:amber bold)"
+
+# ========================================
+# LANGUAGES
+# ========================================
+
+[python]
+symbol = ""
+style = "fg:bg1 bg:green"
+format = "[](fg:green)[ $symbol $version ]($style)[](fg:green) "
+version_format = "${major}.${minor}"
+
+[nodejs]
+symbol = ""
+style = "fg:bg1 bg:blue"
+format = "[](fg:blue)[ $symbol $version ]($style)[](fg:blue) "
+version_format = "${raw}"
+
+[rust]
+symbol = ""
+style = "fg:bg1 bg:amber"
+format = "[](fg:amber)[ $symbol $version ]($style)[](fg:amber) "
+version_format = "${major}.${minor}"
+
+# ========================================
+# PACKAGE
+# ========================================
+
+[package]
+symbol = ""
+style = "fg:fg bg:bg3"
+format = "[](fg:bg3)[ $symbol $version ]($style)[](fg:bg3) "
+
+# ========================================
+# CMD DURATION
+# ========================================
+
+[cmd_duration]
+min_time = 1000
+style = "fg:fg bg:bg2"
+format = "[](fg:bg2)[  $duration ]($style)[](fg:bg2) "
+
+# ========================================
+# TIME
+# ========================================
+
+[time]
+disabled = false
+time_format = "%H:%M"
+style = "fg:bg1 bg:cyan"
+format = "[](fg:cyan)[  $time ]($style)[](fg:cyan)"

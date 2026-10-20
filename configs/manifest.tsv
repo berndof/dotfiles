@@ -1,0 +1,12 @@
+# Component	RepoPath	TargetPath	Description
+zsh	configs/zsh/.zshrc	.zshrc	Zsh main configuration (Zinit, plugins, lazy-load, aliases)
+p10k	configs/zsh/.p10k.zsh	.p10k.zsh	Powerlevel10k lean prompt configuration
+konsole	configs/konsole/konsolerc	.config/konsolerc	KDE Konsole global configuration
+konsole	configs/konsole/zsh.profile	.local/share/konsole/zsh.profile	KDE Konsole default Zsh profile (font, margin, colorscheme)
+konsole	configs/konsole/linux.keytab	.local/share/konsole/linux.keytab	KDE Konsole keybindings table
+prompts	configs/prompts/starship.toml	.config/starship.toml	Starship prompt configuration (Tactical palette)
+prompts	configs/prompts/spaceship.zsh	.config/spaceship.zsh	Spaceship prompt configuration
+atuin	configs/atuin/config.toml	.config/atuin/config.toml	Atuin shell history daemon & fuzzy search configuration
+micro	configs/micro/settings.json	.config/micro/settings.json	Micro terminal editor settings
+micro	configs/micro/bindings.json	.config/micro/bindings.json	Micro terminal editor keybindings
+btop	configs/btop/btop.conf	.config/btop/btop.conf	btop++ system monitor configuration

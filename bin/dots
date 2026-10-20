@@ -1,0 +1,735 @@
+#!/usr/bin/env bash
+# =============================================================================
+# dots — Explicit Dotfiles & Terminal Environment Manager
+# Repository: https://github.com/berndof/dotfiles
+# =============================================================================
+set -euo pipefail
+
+# Resolve repository root even when invoked via symlink (~/.local/bin/dots)
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MANIFEST="$REPO_ROOT/configs/manifest.tsv"
+BACKUP_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles-backups"
+
+# Colors
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
+  C_GREEN=$'\033[38;5;114m'
+  C_YELLOW=$'\033[38;5;215m'
+  C_RED=$'\033[38;5;204m'
+  C_BLUE=$'\033[38;5;111m'
+  C_CYAN=$'\033[38;5;117m'
+  C_MAUVE=$'\033[38;5;183m'
+else
+  C_RESET="" C_BOLD="" C_DIM="" C_GREEN="" C_YELLOW="" C_RED="" C_BLUE="" C_CYAN="" C_MAUVE=""
+fi
+
+log_info()  { printf "%s[INFO]%s  %s\n" "$C_BLUE" "$C_RESET" "$*"; }
+log_ok()    { printf "%s[OK]%s    %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+log_warn()  { printf "%s[WARN]%s  %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+log_err()   { printf "%s[ERR]%s   %s\n" "$C_RED" "$C_RESET" "$*" >&2; }
+
+usage() {
+  cat <<EOF
+${C_BOLD}${C_MAUVE}dots${C_RESET} — Terminal Environment & Dotfiles Manager (${C_DIM}${REPO_ROOT}${C_RESET})
+
+${C_BOLD}USAGE:${C_RESET}
+  dots <command> [options]
+
+${C_BOLD}COMMANDS:${C_RESET}
+  ${C_CYAN}status${C_RESET}  [component]                  Compare live system (~/) vs repository configs
+  ${C_CYAN}diff${C_RESET}    [component]                  Show unified diff between repo and live files
+  ${C_CYAN}collect${C_RESET} [component] [-c "msg"] [-p]  Capture live configs from ~/ into repository
+  ${C_CYAN}apply${C_RESET}   [component] [--dry-run]      Apply repository configs to ~/ (with auto-backup)
+  ${C_CYAN}theme${C_RESET}   [list|konsole|prompt]        Inspect or switch Konsole colorscheme / Zsh prompt
+  ${C_CYAN}doctor${C_RESET}                               Verify CLI tools, fonts, Zinit plugins & hygiene
+  ${C_CYAN}bench${C_RESET}   [runs]                       Benchmark interactive Zsh startup latency (ms)
+  ${C_CYAN}backup${C_RESET}  [list|restore <id>]          List or restore automatic pre-apply backups
+
+${C_BOLD}COMPONENTS:${C_RESET}
+  all (default), zsh, p10k, konsole, prompts, atuin, micro, btop
+
+${C_BOLD}EXAMPLES:${C_RESET}
+  dots status
+  dots diff zsh
+  dots collect -c "feat(zsh): add new alias" -p
+  dots apply konsole
+  dots theme konsole TokyoNight
+  dots theme prompt starship
+  dots doctor
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Helpers: Manifest Reader & Secret Scanner
+# -----------------------------------------------------------------------------
+matches_filter() {
+  local comp="$1"
+  local filter="${2:-all}"
+  [[ "$filter" == "all" || "$filter" == "$comp" ]]
+}
+
+scan_secrets() {
+  local bad=0
+  local pattern='(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+  while IFS= read -r -d '' file; do
+    if grep -qE "$pattern" "$file" 2>/dev/null; then
+      log_err "Potential secret/token detected in: ${file#"$REPO_ROOT/"}"
+      grep -nE "$pattern" "$file" >&2 || true
+      bad=1
+    fi
+  done < <(find "$REPO_ROOT/configs" -type f -print0 2>/dev/null)
+  return "$bad"
+}
+
+get_active_konsole_scheme() {
+  local profile="$HOME/.local/share/konsole/zsh.profile"
+  if [[ -f "$profile" ]]; then
+    grep -E '^ColorScheme=' "$profile" | head -n1 | cut -d= -f2- || echo "unknown"
+  else
+    echo "not-installed"
+  fi
+}
+
+get_active_prompt_engine() {
+  local zshrc="$HOME/.zshrc"
+  if [[ ! -f "$zshrc" ]]; then
+    echo "not-installed"
+  elif grep -qE '^\s*eval "\$\(starship init zsh\)"' "$zshrc"; then
+    echo "starship"
+  elif grep -qE 'powerlevel10k|p10k\.zsh' "$zshrc"; then
+    echo "powerlevel10k"
+  else
+    echo "custom"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Command: status
+# -----------------------------------------------------------------------------
+cmd_status() {
+  local filter="${1:-all}"
+  local in_sync=0 drifted=0 missing=0
+
+  printf "\n${C_BOLD}${C_MAUVE}╭─ Terminal Environment Status${C_RESET} (${C_DIM}%s${C_RESET})\n" "$REPO_ROOT"
+  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Konsole Theme : ${C_CYAN}%s${C_RESET}\n" "$(get_active_konsole_scheme)"
+  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Prompt Engine : ${C_CYAN}%s${C_RESET}\n" "$(get_active_prompt_engine)"
+  printf "${C_BOLD}${C_MAUVE}╰──────────────────────────────────────────────────────────────────────────${C_RESET}\n\n"
+
+  printf "  ${C_BOLD}%-10s %-34s %-22s %s${C_RESET}\n" "COMPONENT" "TARGET (~)" "STATUS" "DESCRIPTION"
+  printf "  ${C_DIM}%-10s %-34s %-22s %s${C_RESET}\n" "──────────" "──────────────────────────────────" "──────────────────────" "───────────────────────────"
+
+  while IFS=$'\t' read -r comp repo_rel target_rel desc; do
+    [[ -z "$comp" || "$comp" =~ ^# ]] && continue
+    matches_filter "$comp" "$filter" || continue
+
+    local repo_file="$REPO_ROOT/$repo_rel"
+    local target_file="$HOME/$target_rel"
+    local status_str=""
+
+    if [[ ! -f "$repo_file" && ! -f "$target_file" ]]; then
+      status_str="${C_RED}✖ MISSING (both)${C_RESET}"
+      ((missing+=1))
+    elif [[ ! -f "$repo_file" ]]; then
+      status_str="${C_YELLOW}◌ UNCOLLECTED${C_RESET}"
+      ((missing+=1))
+    elif [[ ! -f "$target_file" ]]; then
+      status_str="${C_YELLOW}✖ MISSING (local)${C_RESET}"
+      ((missing+=1))
+    elif cmp -s "$repo_file" "$target_file"; then
+      status_str="${C_GREEN}✔ IN SYNC${C_RESET}"
+      ((in_sync+=1))
+    else
+      local repo_mtime target_mtime
+      repo_mtime="$(stat -c %Y "$repo_file" 2>/dev/null || echo 0)"
+      target_mtime="$(stat -c %Y "$target_file" 2>/dev/null || echo 0)"
+      if (( target_mtime > repo_mtime )); then
+        status_str="${C_YELLOW}⚡ DRIFT (local newer)${C_RESET}"
+      else
+        status_str="${C_CYAN}⚡ DRIFT (repo newer)${C_RESET}"
+      fi
+      ((drifted+=1))
+    fi
+
+    printf "  %-10s %-34s %-33s ${C_DIM}%s${C_RESET}\n" "$comp" "~/$target_rel" "$status_str" "$desc"
+  done < "$MANIFEST"
+
+  # Check Konsole colorschemes directory summary
+  if matches_filter "konsole" "$filter"; then
+    local cs_repo_dir="$REPO_ROOT/configs/konsole/colorschemes"
+    local cs_live_dir="$HOME/.local/share/konsole"
+    local cs_total=0 cs_drift=0
+    if [[ -d "$cs_repo_dir" ]]; then
+      while IFS= read -r -d '' cs_file; do
+        ((cs_total+=1))
+        local base
+        base="$(basename "$cs_file")"
+        if [[ ! -f "$cs_live_dir/$base" ]] || ! cmp -s "$cs_file" "$cs_live_dir/$base"; then
+          ((cs_drift+=1))
+        fi
+      done < <(find "$cs_repo_dir" -maxdepth 1 -name '*.colorscheme' -type f -print0)
+    fi
+    local cs_status
+    if (( cs_total == 0 )); then
+      cs_status="${C_YELLOW}◌ UNCOLLECTED${C_RESET}"
+    elif (( cs_drift == 0 )); then
+      cs_status="${C_GREEN}✔ IN SYNC (${cs_total} themes)${C_RESET}"
+      ((in_sync+=1))
+    else
+      cs_status="${C_YELLOW}⚡ DRIFT (${cs_drift}/${cs_total} differ)${C_RESET}"
+      ((drifted+=1))
+    fi
+    printf "  %-10s %-34s %-33s ${C_DIM}%s${C_RESET}\n" "konsole" "~/.local/share/konsole/*.colorscheme" "$cs_status" "Konsole color palettes"
+  fi
+
+  printf "\n  ${C_BOLD}Summary:${C_RESET} ${C_GREEN}%d in sync${C_RESET} · ${C_YELLOW}%d drifted${C_RESET} · ${C_RED}%d missing${C_RESET}\n" "$in_sync" "$drifted" "$missing"
+
+  if [[ -d "$REPO_ROOT/.git" ]]; then
+    local git_changes
+    git_changes="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | wc -l)"
+    if (( git_changes > 0 )); then
+      printf "  ${C_BOLD}Git Repo:${C_RESET} ${C_YELLOW}%d uncommitted change(s) in repository${C_RESET} (run ${C_CYAN}git -C %s status${C_RESET})\n" "$git_changes" "$REPO_ROOT"
+    else
+      printf "  ${C_BOLD}Git Repo:${C_RESET} ${C_GREEN}working tree clean${C_RESET}\n"
+    fi
+  fi
+  printf "\n"
+}
+
+# -----------------------------------------------------------------------------
+# Command: diff
+# -----------------------------------------------------------------------------
+cmd_diff() {
+  local filter="${1:-all}"
+  local found_diff=0
+
+  while IFS=$'\t' read -r comp repo_rel target_rel desc; do
+    [[ -z "$comp" || "$comp" =~ ^# ]] && continue
+    matches_filter "$comp" "$filter" || continue
+
+    local repo_file="$REPO_ROOT/$repo_rel"
+    local target_file="$HOME/$target_rel"
+
+    if [[ -f "$repo_file" && -f "$target_file" ]]; then
+      if ! cmp -s "$repo_file" "$target_file"; then
+        found_diff=1
+        printf "\n${C_BOLD}${C_MAUVE}═══ Diff [%s]: repo (%s) vs live (~/%s) ═══${C_RESET}\n" "$comp" "$repo_rel" "$target_rel"
+        git diff --no-index --color=always "$repo_file" "$target_file" || true
+      fi
+    elif [[ ! -f "$repo_file" && -f "$target_file" ]]; then
+      found_diff=1
+      log_warn "[$comp] ~/$target_rel exists locally but is not yet collected in repo."
+    elif [[ -f "$repo_file" && ! -f "$target_file" ]]; then
+      found_diff=1
+      log_warn "[$comp] $repo_rel exists in repo but is missing at ~/$target_rel."
+    fi
+  done < "$MANIFEST"
+
+  if matches_filter "konsole" "$filter" && [[ -d "$REPO_ROOT/configs/konsole/colorschemes" ]]; then
+    while IFS= read -r -d '' cs_file; do
+      local base
+      base="$(basename "$cs_file")"
+      local live_cs="$HOME/.local/share/konsole/$base"
+      if [[ -f "$live_cs" ]] && ! cmp -s "$cs_file" "$live_cs"; then
+        found_diff=1
+        printf "\n${C_BOLD}${C_MAUVE}═══ Diff [konsole/colorscheme]: %s ═══${C_RESET}\n" "$base"
+        git diff --no-index --color=always "$cs_file" "$live_cs" || true
+      fi
+    done < <(find "$REPO_ROOT/configs/konsole/colorschemes" -maxdepth 1 -name '*.colorscheme' -type f -print0)
+  fi
+
+  if (( found_diff == 0 )); then
+    log_ok "No differences between repository and live system (${filter})."
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Command: collect (Live System ~/ -> Repository)
+# -----------------------------------------------------------------------------
+cmd_collect() {
+  local filter="all"
+  local commit_msg=""
+  local do_push=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -c|--commit)
+        commit_msg="${2:-}"
+        shift 2
+        ;;
+      -p|--push)
+        do_push=1
+        shift
+        ;;
+      *)
+        filter="$1"
+        shift
+        ;;
+    esac
+  done
+
+  local count=0
+  while IFS=$'\t' read -r comp repo_rel target_rel desc; do
+    [[ -z "$comp" || "$comp" =~ ^# ]] && continue
+    matches_filter "$comp" "$filter" || continue
+
+    local repo_file="$REPO_ROOT/$repo_rel"
+    local target_file="$HOME/$target_rel"
+
+    if [[ -f "$target_file" ]]; then
+      mkdir -p "$(dirname "$repo_file")"
+      if [[ ! -f "$repo_file" ]] || ! cmp -s "$target_file" "$repo_file"; then
+        cp -p "$target_file" "$repo_file"
+        log_ok "Collected [$comp] ~/$target_rel -> $repo_rel"
+        ((count+=1))
+      fi
+    else
+      log_warn "Skipped [$comp] ~/$target_rel (file not found on live system)"
+    fi
+  done < "$MANIFEST"
+
+  # Collect valid Konsole colorschemes
+  if matches_filter "konsole" "$filter" && [[ -d "$HOME/.local/share/konsole" ]]; then
+    local cs_dest="$REPO_ROOT/configs/konsole/colorschemes"
+    mkdir -p "$cs_dest"
+    while IFS= read -r -d '' live_cs; do
+      local base
+      base="$(basename "$live_cs")"
+      # Validate colorscheme file (skip broken 404 files)
+      if grep -q '^\[Background\]' "$live_cs" 2>/dev/null; then
+        if [[ ! -f "$cs_dest/$base" ]] || ! cmp -s "$live_cs" "$cs_dest/$base"; then
+          cp -p "$live_cs" "$cs_dest/$base"
+          log_ok "Collected [konsole] colorscheme: $base"
+          ((count+=1))
+        fi
+      else
+        log_warn "Skipped invalid Konsole colorscheme: $base (missing [Background] header)"
+      fi
+    done < <(find "$HOME/.local/share/konsole" -maxdepth 1 -name '*.colorscheme' -type f -print0)
+  fi
+
+  # Run secret scan gate
+  if ! scan_secrets; then
+    log_err "Secret hygiene gate failed! Please remove sensitive tokens before committing."
+    exit 1
+  fi
+
+  if (( count == 0 )); then
+    log_info "All tracked files for '${filter}' are already up to date in the repository."
+  else
+    log_ok "Collected $count updated file(s) into repository."
+  fi
+
+  if [[ -n "$commit_msg" && -d "$REPO_ROOT/.git" ]]; then
+    git -C "$REPO_ROOT" add configs/
+    if ! git -C "$REPO_ROOT" diff --cached --quiet; then
+      git -C "$REPO_ROOT" commit -m "$commit_msg"
+      log_ok "Committed changes: $commit_msg"
+      if (( do_push == 1 )); then
+        git -C "$REPO_ROOT" push
+        log_ok "Pushed changes to remote origin."
+      fi
+    else
+      log_info "No staged changes to commit."
+    fi
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Command: apply (Repository -> Live System ~/)
+# -----------------------------------------------------------------------------
+cmd_apply() {
+  local filter="all"
+  local no_backup=0
+  local dry_run=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-backup) no_backup=1; shift ;;
+      --dry-run|-n) dry_run=1; shift ;;
+      *) filter="$1"; shift ;;
+    esac
+  done
+
+  local ts
+  ts="$(date +%Y%m%d_%H%M%S)"
+  local backup_dir="$BACKUP_ROOT/$ts"
+  local backed_up=0
+  local applied=0
+
+  while IFS=$'\t' read -r comp repo_rel target_rel desc; do
+    [[ -z "$comp" || "$comp" =~ ^# ]] && continue
+    matches_filter "$comp" "$filter" || continue
+
+    local repo_file="$REPO_ROOT/$repo_rel"
+    local target_file="$HOME/$target_rel"
+
+    if [[ ! -f "$repo_file" ]]; then
+      log_warn "Skipped [$comp] $repo_rel (not present in repo)"
+      continue
+    fi
+
+    if [[ -f "$target_file" ]] && cmp -s "$repo_file" "$target_file"; then
+      continue
+    fi
+
+    if (( dry_run == 1 )); then
+      log_info "[DRY-RUN] Would apply $repo_rel -> ~/$target_rel"
+      ((applied+=1))
+      continue
+    fi
+
+    if [[ -f "$target_file" ]] && (( no_backup == 0 )); then
+      mkdir -p "$(dirname "$backup_dir/$target_rel")"
+      cp -p "$target_file" "$backup_dir/$target_rel"
+      ((backed_up+=1))
+    fi
+
+    mkdir -p "$(dirname "$target_file")"
+    cp -p "$repo_file" "$target_file"
+    log_ok "Applied [$comp] $repo_rel -> ~/$target_rel"
+    ((applied+=1))
+  done < "$MANIFEST"
+
+  # Apply Konsole colorschemes
+  if matches_filter "konsole" "$filter" && [[ -d "$REPO_ROOT/configs/konsole/colorschemes" ]]; then
+    local cs_live_dir="$HOME/.local/share/konsole"
+    mkdir -p "$cs_live_dir"
+    while IFS= read -r -d '' cs_file; do
+      local base
+      base="$(basename "$cs_file")"
+      local target_cs="$cs_live_dir/$base"
+      if [[ -f "$target_cs" ]] && cmp -s "$cs_file" "$target_cs"; then
+        continue
+      fi
+      if (( dry_run == 1 )); then
+        log_info "[DRY-RUN] Would apply colorscheme: $base"
+        ((applied+=1))
+        continue
+      fi
+      if [[ -f "$target_cs" ]] && (( no_backup == 0 )); then
+        mkdir -p "$backup_dir/.local/share/konsole"
+        cp -p "$target_cs" "$backup_dir/.local/share/konsole/$base"
+        ((backed_up+=1))
+      fi
+      cp -p "$cs_file" "$target_cs"
+      log_ok "Applied [konsole] colorscheme -> ~/.local/share/konsole/$base"
+      ((applied+=1))
+    done < <(find "$REPO_ROOT/configs/konsole/colorschemes" -maxdepth 1 -name '*.colorscheme' -type f -print0)
+  fi
+
+  if (( backed_up > 0 )); then
+    log_info "Created backup snapshot of $backed_up overwritten file(s) at: $backup_dir"
+  fi
+
+  if (( applied == 0 )); then
+    log_ok "Live environment is already in sync with repository (${filter})."
+  else
+    log_ok "Applied $applied configuration file(s)."
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Command: theme (Switch Konsole ColorScheme or Zsh Prompt Engine)
+# -----------------------------------------------------------------------------
+cmd_theme() {
+  local sub="${1:-list}"
+  shift || true
+
+  case "$sub" in
+    list)
+      local active_cs active_prompt
+      active_cs="$(get_active_konsole_scheme)"
+      active_prompt="$(get_active_prompt_engine)"
+
+      printf "\n${C_BOLD}${C_MAUVE}=== Prompt Engines ===${C_RESET}\n"
+      for p in powerlevel10k starship; do
+        if [[ "$p" == "$active_prompt" ]]; then
+          printf "  ${C_GREEN}● %-16s (active)${C_RESET}\n" "$p"
+        else
+          printf "  ${C_DIM}○ %-16s${C_RESET}\n" "$p"
+        fi
+      done
+
+      printf "\n${C_BOLD}${C_MAUVE}=== Konsole Color Schemes ===${C_RESET}\n"
+      local cs_dir="$REPO_ROOT/configs/konsole/colorschemes"
+      [[ ! -d "$cs_dir" ]] && cs_dir="$HOME/.local/share/konsole"
+      while IFS= read -r -d '' f; do
+        local name
+        name="$(basename "$f" .colorscheme)"
+        local desc
+        desc="$(grep -E '^Description=' "$f" 2>/dev/null | head -n1 | cut -d= -f2- || echo "$name")"
+        if [[ "$name" == "$active_cs" ]]; then
+          printf "  ${C_GREEN}● %-30s${C_RESET} ${C_DIM}(%s) [active]${C_RESET}\n" "$name" "$desc"
+        else
+          printf "  ${C_DIM}○${C_RESET} %-30s ${C_DIM}(%s)${C_RESET}\n" "$name" "$desc"
+        fi
+      done < <(find "$cs_dir" -maxdepth 1 -name '*.colorscheme' -type f -print0 | sort -z)
+      printf "\n${C_DIM}Switch with: dots theme konsole <name>  OR  dots theme prompt <p10k|starship>${C_RESET}\n\n"
+      ;;
+
+    konsole)
+      local scheme="${1:-}"
+      if [[ -z "$scheme" ]]; then
+        log_err "Usage: dots theme konsole <scheme-name>"
+        exit 1
+      fi
+      scheme="${scheme%.colorscheme}"
+      local cs_file="$HOME/.local/share/konsole/${scheme}.colorscheme"
+      local repo_cs="$REPO_ROOT/configs/konsole/colorschemes/${scheme}.colorscheme"
+      if [[ ! -f "$cs_file" && -f "$repo_cs" ]]; then
+        mkdir -p "$HOME/.local/share/konsole"
+        cp -p "$repo_cs" "$cs_file"
+      fi
+      if [[ ! -f "$cs_file" ]]; then
+        log_err "Colorscheme '${scheme}' not found in ~/.local/share/konsole or repo."
+        exit 1
+      fi
+      local profile="$HOME/.local/share/konsole/zsh.profile"
+      if [[ -f "$profile" ]]; then
+        sed -i "s/^ColorScheme=.*/ColorScheme=${scheme}/" "$profile"
+        log_ok "Updated ~/.local/share/konsole/zsh.profile -> ColorScheme=${scheme}"
+      fi
+      if command -v konsoleprofile >/dev/null 2>&1 && [[ -n "${KONSOLE_DBUS_SESSION:-}" ]]; then
+        konsoleprofile "colors=${scheme}" 2>/dev/null || true
+      fi
+      log_info "Run 'dots collect konsole' if you want to save this theme as default in the repo."
+      ;;
+
+    prompt)
+      local engine="${1:-}"
+      local zshrc="$HOME/.zshrc"
+      if [[ ! -f "$zshrc" ]]; then
+        log_err "~/.zshrc not found."
+        exit 1
+      fi
+      case "$engine" in
+        p10k|powerlevel10k)
+          sed -i 's/^[[:space:]]*eval "\$(starship init zsh)"/# eval "$(starship init zsh)"/' "$zshrc"
+          sed -i 's/^#[[:space:]]*\(\[\[ ! -f ~\/\.p10k\.zsh \]\] || source ~\/\.p10k\.zsh\)/\1/' "$zshrc"
+          sed -i 's/^#[[:space:]]*\(zinit ice depth=1; zinit light romkatv\/powerlevel10k\)/\1/' "$zshrc"
+          log_ok "Switched active Zsh prompt to Powerlevel10k. Run 'source ~/.zshrc' to reload."
+          ;;
+        starship)
+          if ! command -v starship >/dev/null 2>&1; then
+            log_warn "starship binary not found in PATH! Install it first (curl -sS https://starship.rs/install.sh | sh)."
+          fi
+          sed -i 's/^\(zinit ice depth=1; zinit light romkatv\/powerlevel10k\)/# \1/' "$zshrc"
+          sed -i 's/^\(\[\[ ! -f ~\/\.p10k\.zsh \]\] || source ~\/\.p10k\.zsh\)/# \1/' "$zshrc"
+          if grep -qE 'eval "\$\(starship init zsh\)"' "$zshrc"; then
+            sed -i 's/^#[[:space:]]*\(eval "\$(starship init zsh)"\)/\1/' "$zshrc"
+          else
+            printf '\n# Starship Prompt\neval "$(starship init zsh)"\n' >> "$zshrc"
+          fi
+          log_ok "Switched active Zsh prompt to Starship (Tactical theme). Run 'source ~/.zshrc' to reload."
+          ;;
+        *)
+          log_err "Usage: dots theme prompt <p10k|starship>"
+          exit 1
+          ;;
+      esac
+      ;;
+
+    *)
+      log_err "Unknown theme subcommand: $sub (expected: list, konsole, prompt)"
+      exit 1
+      ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# Command: doctor
+# -----------------------------------------------------------------------------
+cmd_doctor() {
+  printf "\n${C_BOLD}${C_MAUVE}=== Dotfiles & Terminal Environment Doctor ===${C_RESET}\n\n"
+
+  local ok_count=0 warn_count=0
+
+  check_bin() {
+    local bin="$1" role="$2" extra_path="${3:-}"
+    local resolved=""
+    if command -v "$bin" >/dev/null 2>&1; then
+      resolved="$(command -v "$bin")"
+    elif [[ -n "$extra_path" && -x "$extra_path" ]]; then
+      resolved="$extra_path"
+    fi
+
+    if [[ -n "$resolved" ]]; then
+      local ver
+      ver="$("$resolved" --version 2>/dev/null | grep -vE '^eza - A modern|^$' | head -n1 | cut -c1-45 || echo "installed")"
+      printf "  ${C_GREEN}✔${C_RESET} %-14s %-38s ${C_DIM}(%s)${C_RESET}\n" "$bin" "$ver" "$role"
+      ((ok_count+=1))
+    else
+      printf "  ${C_YELLOW}✖${C_RESET} %-14s %-38s ${C_DIM}(%s)${C_RESET}\n" "$bin" "MISSING" "$role"
+      ((warn_count+=1))
+    fi
+  }
+
+  printf "${C_BOLD}1. Core Shell & CLI Tools:${C_RESET}\n"
+  check_bin zsh      "Interactive shell"
+  check_bin git      "Version control"
+  check_bin eza      "Modern ls replacement with icons/git"
+  check_bin fzf      "Fuzzy finder (fzf-tab)"
+  check_bin zoxide   "Smart directory jumper" "$HOME/.local/bin/zoxide"
+  check_bin atuin    "Magical shell history" "$HOME/.atuin/bin/atuin"
+  check_bin direnv   "Per-directory environment loader"
+  check_bin micro    "Default terminal editor"
+  check_bin btop     "System resource monitor"
+  check_bin starship "Alternative cross-shell prompt"
+  check_bin gh       "GitHub CLI"
+  check_bin uv       "Fast Python package/tool manager" "$HOME/.local/bin/uv"
+
+  printf "\n${C_BOLD}2. Shell Plugin Manager & Fonts:${C_RESET}\n"
+  local zinit_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
+  if [[ -d "$zinit_dir" ]]; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "zinit" "Installed at $zinit_dir"
+    ((ok_count+=1))
+  else
+    printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "zinit" "Missing ($zinit_dir)"
+    ((warn_count+=1))
+  fi
+
+  if command -v fc-list >/dev/null 2>&1; then
+    local font_families
+    font_families="$(fc-list : family 2>/dev/null || true)"
+    if grep -qi "JetBrainsMono Nerd Font" <<< "$font_families"; then
+      printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font detected"
+      ((ok_count+=1))
+    else
+      printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font not found (run './install.sh --fonts')"
+      ((warn_count+=1))
+    fi
+    if grep -qi "Noto Color Emoji" <<< "$font_families"; then
+      printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji detected"
+      ((ok_count+=1))
+    else
+      printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji not found"
+      ((warn_count+=1))
+    fi
+  fi
+
+  local login_shell
+  login_shell="$(getent passwd "$USER" | cut -d: -f7)"
+  if [[ "$login_shell" == */zsh ]]; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Login Shell" "$login_shell"
+  else
+    printf "  ${C_YELLOW}ℹ${C_RESET} %-14s %s ${C_DIM}(Konsole profile uses /bin/zsh; run 'chsh -s \$(which zsh)' for OS login shell)${C_RESET}\n" "Login Shell" "$login_shell"
+  fi
+
+  printf "\n${C_BOLD}3. Security & Secret Hygiene:${C_RESET}\n"
+  if scan_secrets; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Secret Scan" "0 tokens or private keys found in configs/"
+  else
+    ((warn_count+=1))
+  fi
+
+  printf "\n${C_BOLD}Doctor Summary:${C_RESET} ${C_GREEN}%d passed${C_RESET}, ${C_YELLOW}%d warnings${C_RESET}\n\n" "$ok_count" "$warn_count"
+}
+
+# -----------------------------------------------------------------------------
+# Command: bench (Zsh Startup Latency Benchmark)
+# -----------------------------------------------------------------------------
+cmd_bench() {
+  local runs="${1:-5}"
+  if ! command -v zsh >/dev/null 2>&1; then
+    log_err "zsh is not installed."
+    exit 1
+  fi
+
+  printf "\n${C_BOLD}${C_MAUVE}=== Zsh Interactive Startup Benchmark (%d runs) ===${C_RESET}\n" "$runs"
+  local total_ms=0 min_ms=999999 max_ms=0
+
+  for ((i=1; i<=runs; i++)); do
+    local t0 t1 elapsed_ms
+    t0="$(date +%s%3N)"
+    zsh -i -c exit >/dev/null 2>&1
+    t1="$(date +%s%3N)"
+    elapsed_ms=$(( t1 - t0 ))
+    total_ms=$(( total_ms + elapsed_ms ))
+    (( elapsed_ms < min_ms )) && min_ms=$elapsed_ms
+    (( elapsed_ms > max_ms )) && max_ms=$elapsed_ms
+    printf "  Run #%d: ${C_CYAN}%d ms${C_RESET}\n" "$i" "$elapsed_ms"
+  done
+
+  local avg_ms=$(( total_ms / runs ))
+  printf "\n  ${C_BOLD}Result:${C_RESET} avg=${C_GREEN}%d ms${C_RESET} · min=${C_CYAN}%d ms${C_RESET} · max=${C_YELLOW}%d ms${C_RESET}\n\n" "$avg_ms" "$min_ms" "$max_ms"
+}
+
+# -----------------------------------------------------------------------------
+# Command: backup (List / Restore Backups)
+# -----------------------------------------------------------------------------
+cmd_backup() {
+  local sub="${1:-list}"
+  shift || true
+
+  case "$sub" in
+    list)
+      printf "\n${C_BOLD}${C_MAUVE}=== Dotfiles Automatic Backups ===${C_RESET} (${C_DIM}%s${C_RESET})\n" "$BACKUP_ROOT"
+      if [[ ! -d "$BACKUP_ROOT" ]] || [[ -z "$(ls -A "$BACKUP_ROOT" 2>/dev/null)" ]]; then
+        printf "  ${C_DIM}No backups created yet.${C_RESET}\n\n"
+        return 0
+      fi
+      for dir in "$BACKUP_ROOT"/*; do
+        [[ -d "$dir" ]] || continue
+        local id count
+        id="$(basename "$dir")"
+        count="$(find "$dir" -type f | wc -l)"
+        printf "  • ${C_CYAN}%-18s${C_RESET} (%d file(s))\n" "$id" "$count"
+      done
+      printf "\n${C_DIM}Restore with: dots backup restore <timestamp>${C_RESET}\n\n"
+      ;;
+    restore)
+      local id="${1:-}"
+      if [[ -z "$id" || ! -d "$BACKUP_ROOT/$id" ]]; then
+        log_err "Usage: dots backup restore <timestamp> (run 'dots backup list' to see available IDs)"
+        exit 1
+      fi
+      while IFS= read -r -d '' file; do
+        local rel="${file#"$BACKUP_ROOT/$id/"}"
+        mkdir -p "$(dirname "$HOME/$rel")"
+        cp -p "$file" "$HOME/$rel"
+        log_ok "Restored ~/$rel"
+      done < <(find "$BACKUP_ROOT/$id" -type f -print0)
+      log_ok "Backup '$id' restored successfully."
+      ;;
+    *)
+      log_err "Unknown backup subcommand: $sub (expected: list, restore)"
+      exit 1
+      ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# Main Dispatcher
+# -----------------------------------------------------------------------------
+main() {
+  local cmd="${1:-status}"
+  shift || true
+
+  case "$cmd" in
+    status|st)       cmd_status "$@" ;;
+    diff|df)         cmd_diff "$@" ;;
+    collect|pull|capture) cmd_collect "$@" ;;
+    apply|push|deploy)    cmd_apply "$@" ;;
+    theme|th)        cmd_theme "$@" ;;
+    doctor|check)    cmd_doctor "$@" ;;
+    bench|benchmark) cmd_bench "$@" ;;
+    backup|bk)       cmd_backup "$@" ;;
+    -h|--help|help)  usage ;;
+    *)
+      log_err "Unknown command: $cmd"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

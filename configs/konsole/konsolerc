@@ -1,0 +1,29 @@
+[Desktop Entry]
+DefaultProfile=zsh.profile
+
+[General]
+ConfigVersion=1
+
+[KonsoleWindow]
+AllowMenuAccelerators=true
+
+[MainWindow]
+State[$d]
+
+[Notification Messages]
+CloseAllEmptyTabs=true
+CloseAllTabs=true
+
+[SearchSettings]
+SearchRegExpression=true
+
+[SplitView]
+SplitDragHandleSize=SplitDragHandleMedium
+
+[TabBar]
+NewTabButton=true
+TabBarPosition=Bottom
+TabBarVisibility=AlwaysShowTabBar
+
+[UiSettings]
+ColorScheme=
