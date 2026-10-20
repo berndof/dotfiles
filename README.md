@@ -116,10 +116,66 @@ dots theme prompt p10k               # Alterna o prompt do Zsh para o Powerlevel
 
 ### 5. Diagnóstico, Benchmark de Boot e Backups
 ```bash
-dots doctor               # Verifica binários, versões, fontes Nerd/Emoji, Zinit e higiene de secrets
+dots doctor               # Verifica binários, versões, fontes Nerd/Emoji, Zinit, engine do prompt e secrets
 dots bench 5              # Mede o tempo real de inicialização interativa do Zsh (ms) em 5 execuções
 dots backup list          # Lista snapshots automáticos salvos em ~/.local/share/dotfiles-backups/
 dots backup restore <id>  # Restaura um snapshot anterior
+```
+
+---
+
+## Prompt em Terminal Remoto (SSH)
+
+Três coisas determinam a aparência do prompt via SSH. As três precisam estar
+certas **no lado certo**:
+
+| Camada | Onde vive | Quem controla |
+| :--- | :--- | :--- |
+| **Engine** (p10k / starship) | servidor (`~/.zshrc`) | servidor |
+| **Cores do prompt** | servidor (`~/.p10k.zsh`) | servidor |
+| **Fonte + fundo do terminal** | **cliente** (Konsole) | cliente |
+
+### Por que o prompt "fica fora do estilo" em acesso remoto
+
+1. **O engine exibido não é o que o `dots status` reporta.**
+   `dots status` faz *grep* no `~/.zshrc` em disco. Se o arquivo foi trocado
+   depois do shell iniciar (ex.: um `dots apply` durante a sessão), a tela
+   continua mostrando o engine antigo. Use `dots doctor` → **Prompt Live**,
+   que consulta um shell de verdade.
+
+2. **O plugin do Powerlevel10k precisa estar instalado.**
+   Sem ele, o Zinit baixa o plugin *durante* a inicialização do shell,
+   imprime `Downloading ...` no console e o p10k aborta com o bloco
+   `Console output during zsh initialization detected`.
+   O `install.sh` já pré-instala os plugins do Zinit; `dots doctor` avisa
+   quando falta.
+
+3. **Cores do prompt são truecolor, não índices 256.**
+   O p10k usava índices xterm-256 (todos ≥ 28) — faixa que o Konsole *não*
+   remapeia, ou seja, nenhuma cor era Solarized de verdade. Agora o p10k
+   emite `38;2;R;G;B` (truecolor) com a paleta Solarized, lida do próprio
+   `Solarized.colorscheme`. A cor fica idêntica em qualquer terminal.
+
+4. **Fonte e fundo são do cliente.** O `konsolerc` e os `*.colorscheme` do
+   servidor não têm efeito via SSH — quem desenha é o Konsole da sua
+   máquina. Use o profile `zsh` (Solarized + JetBrainsMono Nerd Font).
+
+### Manter as cores em Solarized
+
+`tools/p10k-solarize.py` converte o `.p10k.zsh` para truecolor Solarized
+de forma determinística e idempotente:
+
+```bash
+python3 tools/p10k-solarize.py --check configs/zsh/.p10k.zsh   # só verifica
+python3 tools/p10k-solarize.py --diff  configs/zsh/.p10k.zsh   # mostra o diff
+python3 tools/p10k-solarize.py         configs/zsh/.p10k.zsh   # converte
+```
+
+O mapeamento é **semântico** (papel do segmento → acento Solarized: git
+clean→green, modified→yellow, dir→blue, error→red…), não uma troca
+mecânica de índice. A paleta vem do `Solarized.colorscheme`; o script falha
+alto se algum role ficar sem mapeamento.
+
 ```
 
 ---
