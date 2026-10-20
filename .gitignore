@@ -9,6 +9,10 @@
 *.zwc.old
 .zcompdump*
 
+# Python bytecode (tools/)
+__pycache__/
+*.py[cod]
+
 # Never track history, credentials, or local caches
 .zhistory
 .zsh_history
