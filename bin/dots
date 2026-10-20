@@ -607,6 +607,40 @@ cmd_doctor() {
     ((warn_count+=1))
   fi
 
+  # Plugin do Powerlevel10k: se faltar, o zinit tenta baixar em CADA shell,
+  # imprimindo "Downloading ..." no console -- o que faz o p10k abortar com
+  # o bloco 'Console output during zsh initialization detected'.
+  local p10k_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/plugins/romkatv---powerlevel10k"
+  if [[ -d "$p10k_dir" ]]; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "p10k plugin" "powerlevel10k installed"
+    ((ok_count+=1))
+  else
+    printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "p10k plugin" "Not installed -- zinit will download it on every shell start (run './install.sh --cli')"
+    ((warn_count+=1))
+  fi
+
+  # Engine do prompt REALMENTE em uso. O 'Prompt Engine' do status faz grep no
+  # ~/.zshrc e erra: o arquivo pode ter sido trocado depois do shell iniciar.
+  # Aqui perguntamos ao shell de verdade.
+  local live_engine
+  live_engine="$(zsh -i -c 'if (( $+functions[p10k] )); then print -r -- powerlevel10k; elif (( $+functions[starship__prompt] )) || [[ -n ${STARSHIP_SHELL:-} ]]; then print -r -- starship; else print -r -- unknown; fi' 2>/dev/null | tail -n1)"
+  [[ -z "$live_engine" ]] && live_engine="unknown"
+  local cfg_engine
+  cfg_engine="$(get_active_prompt_engine)"
+  if [[ "$live_engine" == "powerlevel10k" ]]; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Prompt Live" "powerlevel10k (active in this shell)"
+    ((ok_count+=1))
+  elif [[ "$live_engine" == "starship" ]]; then
+    printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Prompt Live" "starship (active in this shell)"
+    ((ok_count+=1))
+  else
+    printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Prompt Live" "No prompt engine detected in a live shell"
+    ((warn_count+=1))
+  fi
+  if [[ "$live_engine" != "unknown" && "$cfg_engine" != "custom" && "$live_engine" != "$cfg_engine" ]]; then
+    printf "  ${C_YELLOW}ℹ${C_RESET} %-14s %s\n" "Prompt Drift" "config says '$cfg_engine' but the running shell uses '$live_engine' -- run 'source ~/.zshrc' or open a new terminal"
+  fi
+
   if command -v fc-list >/dev/null 2>&1; then
     local font_families
     font_families="$(fc-list : family 2>/dev/null || true)"

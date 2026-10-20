@@ -75,6 +75,21 @@ install_os_packages() {
   else
     warn "Unsupported package manager. Falling back to user-space binary installation (--cli)."
   fi
+
+  # fastfetch: nem todo distro o empacota na versao atual, entao e best-effort
+  # e nunca deve derrubar o bootstrap (o alias 'ff' simplesmente fica inerte).
+  if ! command -v fastfetch >/dev/null 2>&1; then
+    info "Installing fastfetch..."
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get install -y fastfetch 2>/dev/null || true
+    elif command -v pacman >/dev/null 2>&1; then
+      sudo pacman -S --needed --noconfirm fastfetch 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      sudo dnf install -y fastfetch 2>/dev/null || true
+    fi
+  fi
+  command -v fastfetch >/dev/null 2>&1 && ok "fastfetch ready." || warn "fastfetch unavailable (alias 'ff' will be inert)."
+
   ok "OS packages ready."
 }
 
@@ -183,6 +198,49 @@ install_cli_tools() {
   fi
 }
 
+# Pré-instala os plugins do Zinit que o ~/.zshrc carrega.
+#
+# Sem isso, o primeiro login (tipicamente via SSH, em uma máquina nova)
+# dispara 'zinit light romkatv/powerlevel10k' durante a inicialização do
+# shell: o zinit baixa o plugin, imprime "Downloading ..." no console e o
+# Powerlevel10k aborta com o bloco de warning 'Console output during zsh
+# initialization detected'. Resultado: o prompt aparece "fora do estilo"
+# justamente na primeira sessão. Pré-instalar elimina esse ruído.
+install_zinit_plugins() {
+  info "Pre-installing Zinit plugins (Powerlevel10k & helpers)..."
+  local zinit_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
+  local plugins_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/plugins"
+
+  if [[ ! -d "$zinit_dir" ]]; then
+    warn "Zinit not found at $zinit_dir -- run './install.sh --cli' first."
+    return 0
+  fi
+  mkdir -p "$plugins_dir"
+
+  # repo -> diretorio no formato do zinit (owner---repo)
+  local entry
+  for entry in "romkatv/powerlevel10k:romkatv---powerlevel10k" \
+               "zdharma-continuum/null:zdharma-continuum---null"; do
+    local repo="${entry%%:*}"
+    local dest="${entry##*:}"
+    local target="$plugins_dir/$dest"
+
+    if [[ -d "$target" ]]; then
+      ok "$dest already installed."
+      continue
+    fi
+
+    info "Cloning $repo..."
+    if git clone --depth 1 "https://github.com/$repo.git" "$target" >/dev/null 2>&1; then
+      ok "$dest installed."
+    else
+      # best-effort: sem rede o zinit tenta de novo no proximo shell
+      warn "Could not clone $repo (no network?) -- zinit will retry on first shell."
+      rm -rf "$target" 2>/dev/null || true
+    fi
+  done
+}
+
 install_fonts() {
   info "Checking JetBrainsMono Nerd Font..."
   if command -v fc-list >/dev/null 2>&1; then
@@ -262,6 +320,11 @@ main() {
   (( do_fonts == 1 )) && install_fonts
   (( do_apply == 1 )) && apply_configs
   (( do_shell == 1 )) && configure_default_shell
+
+  # Sempre por ultimo: precisa do Zinit instalado (--cli) e do ~/.zshrc
+  # aplicado (--apply) para ter efeito. Rodar mesmo sem esses flags e
+  # inofensivo -- a funcao apenas avisa e nao aborta.
+  install_zinit_plugins
 
   printf "\n%s✨ Terminal environment bootstrap complete!%s\n" "$C_GREEN" "$C_RESET"
   printf "Run %sdots status%s or %sdots doctor%s to inspect your setup.\n\n" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
