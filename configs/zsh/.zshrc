@@ -158,7 +158,28 @@ alias ff="fastfetch"
 (( $+commands[ncdu] )) && alias du="ncdu"
 
 # Dotfiles & Ambiente de Terminal (~/Workspace/dotfiles)
-alias dots="$HOME/Workspace/dotfiles/bin/dots"
+# dots e uma FUNCAO (nao alias) para recarregar o shell automaticamente apos
+# 'dots apply'/'dots theme' quando ~/.zshrc ou ~/.p10k.zsh mudam — evita o
+# 'source ~/.zshrc' manual. Processo filho nao alcanca o shell pai, por isso a
+# recarga precisa morar aqui e nao no binario.
+dots() {
+  local _bin="$HOME/Workspace/dotfiles/bin/dots"
+  local _tracked=("$HOME/.zshrc" "$HOME/.p10k.zsh")
+  local _before="" _after="" _f _rc
+  for _f in "${_tracked[@]}"; do
+    [[ -f "$_f" ]] && _before+="$_f:$(md5sum "$_f" 2>/dev/null)"$'\n'
+  done
+  "$_bin" "$@"
+  _rc=$?
+  for _f in "${_tracked[@]}"; do
+    [[ -f "$_f" ]] && _after+="$_f:$(md5sum "$_f" 2>/dev/null)"$'\n'
+  done
+  if [[ "$_before" != "$_after" ]]; then
+    echo "dots: ~/.zshrc ou ~/.p10k.zsh alterado — recarregando shell..."
+    source "$HOME/.zshrc"
+  fi
+  return $_rc
+}
 alias dstatus="dots status"
 alias ddiff="dots diff"
 alias dcollect="dots collect"
