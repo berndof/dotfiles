@@ -115,7 +115,7 @@ zinit wait lucid light-mode for \
 
 # Zoxide, Atuin e completion do Agent Sandbox em background
 zinit wait lucid light-mode for \
-    atinit'(( $+commands[zoxide] )) && eval "$(zoxide init zsh)"' zdharma-continuum/null \
+    atinit'(( $+commands[zoxide] )) && { unalias zi 2>/dev/null; eval "$(zoxide init zsh)"; }' zdharma-continuum/null \
     atinit'[[ -f "$HOME/.atuin/bin/env" ]] && . "$HOME/.atuin/bin/env"; (( $+commands[atuin] )) && eval "$(atuin init zsh)"' zdharma-continuum/null \
     atinit'[[ -f "$HOME/Workspace/agent-sandbox/local/bin/sbx-completion.zsh" ]] && source "$HOME/Workspace/agent-sandbox/local/bin/sbx-completion.zsh"' zdharma-continuum/null
 
