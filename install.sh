@@ -107,9 +107,9 @@ install_os_packages() {
     elif command -v dnf >/dev/null 2>&1; then
       sudo dnf install -y fastfetch 2>/dev/null || true
     fi
-    # Fallback: binario oficial do GitHub em ~/.local/bin (tar.xz, so x86_64)
+    # Fallback: binario oficial do GitHub em ~/.local/bin (asset linux-amd64.tar.gz)
     if ! command -v fastfetch >/dev/null 2>&1 && [[ "$(uname -m)" == "x86_64" ]]; then
-      install_github_binary "fastfetch" "fastfetch-cli/fastfetch" "linux-x86_64\.tar\.xz" "fastfetch" || true
+      install_github_binary "fastfetch" "fastfetch-cli/fastfetch" "linux-amd64\.tar\.gz" "fastfetch" || true
     fi
   fi
   if command -v fastfetch >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/fastfetch" ]]; then
@@ -160,7 +160,13 @@ install_github_binary() {
   fi
 
   local found_bin
-  found_bin="$(find "$tmp_dir" -type f -name "$inner_bin" | head -n1 || true)"
+  # O tarball pode embutir arquivos com o mesmo nome (fastfetch: completions em
+  # usr/share/bash-completion/completions/fastfetch). Prioriza o binario real em
+  # */bin/ e, na falta dele, aceita qualquer nome fora de share/man.
+  found_bin="$(find "$tmp_dir" -type f -path "*/bin/$inner_bin" | head -n1 || true)"
+  if [[ -z "$found_bin" ]]; then
+    found_bin="$(find "$tmp_dir" -type f -name "$inner_bin" ! -path '*/share/*' ! -path '*/man/*' | head -n1 || true)"
+  fi
   if [[ -n "$found_bin" ]]; then
     install -m 0755 "$found_bin" "$HOME/.local/bin/$bin_name"
     ok "$bin_name installed to ~/.local/bin/$bin_name"
