@@ -28,8 +28,8 @@ ${C_BOLD}USAGE:${C_RESET}
 
 ${C_BOLD}FLAGS:${C_RESET}
   --all        Run full setup: packages + cli tools + fonts + apply configs (default if no flags)
-  --packages   Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza, rg, fd, bat, delta, duf, ncdu)
-  --cli        Install modern CLI tools in ~/.local/bin (zinit, zoxide, atuin, starship, rg, fd, bat, delta, duf, ncdu)
+  --packages   Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza, rg, fd, bat, delta, duf, ncdu, gh, fastfetch)
+  --cli        Install modern CLI tools in ~/.local/bin (zinit, zoxide, atuin, starship, uv, rg, fd, bat, delta, duf, ncdu)
   --fonts      Install JetBrainsMono Nerd Font & Noto Color Emoji
   --apply      Link 'dots' CLI into ~/.local/bin and apply tracked configs to ~/
   --shell      Set Zsh as the default OS login shell (chsh)
@@ -76,8 +76,28 @@ install_os_packages() {
     warn "Unsupported package manager. Falling back to user-space binary installation (--cli)."
   fi
 
-  # fastfetch: nem todo distro o empacota na versao atual, entao e best-effort
-  # e nunca deve derrubar o bootstrap (o alias 'ff' simplesmente fica inerte).
+  # GitHub CLI: o pacote varia por distro (Ubuntu noble tem em universe; Debian 12
+  # nao tem) -> best-effort com fallback no binario oficial para ~/.local/bin.
+  if ! command -v gh >/dev/null 2>&1; then
+    info "Installing GitHub CLI (gh)..."
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get install -y gh 2>/dev/null || true
+    elif command -v pacman >/dev/null 2>&1; then
+      sudo pacman -S --needed --noconfirm github-cli 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+      sudo dnf install -y gh 2>/dev/null || true
+    fi
+    # Fallback: binario oficial do GitHub (asset linux_amd64; so x86_64)
+    if ! command -v gh >/dev/null 2>&1 && [[ "$(uname -m)" == "x86_64" ]]; then
+      install_github_binary "gh" "cli/cli" "linux_amd64\.tar\.gz" "gh" || true
+    fi
+  fi
+  command -v gh >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/gh" ]] \
+    && ok "gh ready." || warn "gh unavailable (GitHub CLI)."
+
+  # fastfetch: nem todo distro o empacota na versao atual (ex.: Ubuntu 24.04 noble
+  # nao tem o pacote), entao e best-effort: tenta o pacote do distro e, se falhar,
+  # cai no binario oficial. Nunca deve derrubar o bootstrap (o alias 'ff' fica inerte).
   if ! command -v fastfetch >/dev/null 2>&1; then
     info "Installing fastfetch..."
     if command -v apt-get >/dev/null 2>&1; then
@@ -87,8 +107,16 @@ install_os_packages() {
     elif command -v dnf >/dev/null 2>&1; then
       sudo dnf install -y fastfetch 2>/dev/null || true
     fi
+    # Fallback: binario oficial do GitHub em ~/.local/bin (tar.xz, so x86_64)
+    if ! command -v fastfetch >/dev/null 2>&1 && [[ "$(uname -m)" == "x86_64" ]]; then
+      install_github_binary "fastfetch" "fastfetch-cli/fastfetch" "linux-x86_64\.tar\.xz" "fastfetch" || true
+    fi
   fi
-  command -v fastfetch >/dev/null 2>&1 && ok "fastfetch ready." || warn "fastfetch unavailable (alias 'ff' will be inert)."
+  if command -v fastfetch >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/fastfetch" ]]; then
+    ok "fastfetch ready."
+  else
+    warn "fastfetch unavailable (alias 'ff' will be inert)."
+  fi
 
   ok "OS packages ready."
 }
@@ -125,6 +153,8 @@ install_github_binary() {
 
   if [[ "$download_url" == *.tar.gz || "$download_url" == *.tgz ]]; then
     tar -xzf "$archive" -C "$tmp_dir"
+  elif [[ "$download_url" == *.tar.xz ]]; then
+    tar -xJf "$archive" -C "$tmp_dir"
   elif [[ "$download_url" == *.zip ]]; then
     unzip -qo "$archive" -d "$tmp_dir"
   fi
@@ -183,7 +213,16 @@ install_cli_tools() {
     ok "starship already installed."
   fi
 
-  # 5. Modern Unix Kit (x86_64 Linux static binaries into ~/.local/bin if not installed via OS)
+  # 5. uv — gerenciador de pacotes/ferramentas Python (instalador oficial -> ~/.local/bin)
+  if ! command -v uv >/dev/null 2>&1 && [[ ! -x "$HOME/.local/bin/uv" ]]; then
+    info "Installing uv (Python tool manager)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh || true
+    ok "uv installed."
+  else
+    ok "uv already installed."
+  fi
+
+  # 6. Modern Unix Kit (x86_64 Linux static binaries into ~/.local/bin if not installed via OS)
   if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
     # Normalize Debian/Ubuntu names first if present
     command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 && ln -sfn "$(command -v fdfind)" "$HOME/.local/bin/fd"
@@ -327,7 +366,7 @@ main() {
   install_zinit_plugins
 
   printf "\n%s✨ Terminal environment bootstrap complete!%s\n" "$C_GREEN" "$C_RESET"
-  printf "Run %sdots status%s or %sdots doctor%s to inspect your setup.\n\n" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
+  printf "Run %smake status%s or %smake doctor%s to inspect your setup.\n\n" "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET"
 }
 
 main "$@"

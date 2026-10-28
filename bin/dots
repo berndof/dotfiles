@@ -553,6 +553,12 @@ cmd_theme() {
 # Command: doctor
 # -----------------------------------------------------------------------------
 cmd_doctor() {
+  # O installer coloca binarios em ~/.local/bin (starship, uv, rg, fd...) e em
+  # ~/.atuin/bin, mas um bash de login pode nao ter esses diretorios no PATH
+  # (tipico em host recem-criado via SSH). Sem este export o doctor acusava
+  # starship/uv como MISSING mesmo depois de instalados.
+  export PATH="$HOME/.local/bin:$HOME/.atuin/bin:$PATH"
+
   printf "\n${C_BOLD}${C_MAUVE}=== Dotfiles & Terminal Environment Doctor ===${C_RESET}\n\n"
 
   local ok_count=0 warn_count=0

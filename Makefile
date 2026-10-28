@@ -33,10 +33,10 @@ backup: ## List automatic backups created before apply
 bootstrap: ## Run full environment bootstrap (packages + CLI + fonts + apply)
 	@./install.sh --all
 
-packages: ## Install OS packages (zsh, eza, fzf, direnv, micro, btop)
+packages: ## Install OS packages (zsh, eza, fzf, direnv, micro, btop, gh, fastfetch)
 	@./install.sh --packages
 
-cli: ## Install modern CLI tools (zinit, zoxide, atuin, starship)
+cli: ## Install modern CLI tools (zinit, zoxide, atuin, starship, uv)
 	@./install.sh --cli
 
 fonts: ## Install JetBrainsMono Nerd Font

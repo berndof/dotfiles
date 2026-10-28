@@ -70,8 +70,8 @@ cd ~/Workspace/dotfiles
 Você também pode executar etapas isoladas do instalador:
 
 ```bash
-./install.sh --packages   # Instala pacotes base (zsh, git, fzf, direnv, micro, btop, eza)
-./install.sh --cli        # Instala Zinit, Zoxide, Atuin e Starship em ~/.local
+./install.sh --packages   # Instala pacotes base (zsh, git, fzf, direnv, micro, btop, eza, gh, fastfetch)
+./install.sh --cli        # Instala Zinit, Zoxide, Atuin, Starship e uv em ~/.local
 ./install.sh --fonts      # Baixa e instala a JetBrainsMono Nerd Font em ~/.local/share/fonts
 ./install.sh --apply      # Linka 'dots' em ~/.local/bin/dots e aplica os configs no ~/
 ./install.sh --shell      # Define /bin/zsh como login shell padrão do usuário (chsh)
