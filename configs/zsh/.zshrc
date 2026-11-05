@@ -93,6 +93,15 @@ zstyle ':completion:*:git-checkout:*' sort false
 zstyle ':completion:*:descriptions' format '[%d]'
 zstyle ':completion:*' list-colors ${(s.:.)LS_COLORS}
 zstyle ':completion:*' menu no
+# Completion filtering: ignore invalid/non-existent commands, prioritize real
+# commands over history, suppress internal functions and aliases that return null
+zstyle ':completion:*' tag-order 'commands functions aliases'
+zstyle ':completion:*:commands' ignore-parents pwd soft
+zstyle ':completion:*' ignored-patterns '_*' '(#b)(*)'
+zstyle ':completion:*' accept-exact '*(N)'
+zstyle ':completion:*' completer _complete _expand
+zstyle ':completion:*' use-cache on
+zstyle ':completion:*' cache-path "${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
 zstyle ':fzf-tab:*' switch-group '<' '>'
 zstyle ':fzf-tab:*' fzf-flags '--color=fg:#839496,bg:#002b36,hl:#b58900,fg+:#eee8d5,bg+:#073642,hl+:#cb4b16,info:#268bd2,prompt:#859900,pointer:#2aa198,marker:#859900,spinner:#2aa198,header:#586e75' '--bind=tab:accept'
 zstyle ':fzf-tab:complete:cd:*' fzf-preview 'eza -1 --color=always --icons --git $realpath 2>/dev/null'
