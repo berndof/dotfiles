@@ -97,7 +97,7 @@ zstyle ':completion:*' menu no
 # commands over history, suppress internal functions and aliases that return null
 zstyle ':completion:*' tag-order 'commands functions aliases'
 zstyle ':completion:*:commands' ignore-parents pwd soft
-zstyle ':completion:*' ignored-patterns '_*' '(#b)(*)'
+zstyle ':completion:*' ignored-patterns '(#b).zcompdump*'
 zstyle ':completion:*' accept-exact '*(N)'
 zstyle ':completion:*' completer _complete _expand
 zstyle ':completion:*' use-cache on
