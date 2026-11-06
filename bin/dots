@@ -53,6 +53,7 @@ ${C_BOLD}COMMANDS:${C_RESET}
   ${C_CYAN}doctor${C_RESET}                               Verify CLI tools, fonts, Zinit plugins & hygiene
   ${C_CYAN}bench${C_RESET}   [runs]                       Benchmark interactive Zsh startup latency (ms)
   ${C_CYAN}backup${C_RESET}  [list|restore <id>]          List or restore automatic pre-apply backups
+  ${C_CYAN}update${C_RESET}                               Pull latest from origin and apply all configs (remote-safe)
 
 ${C_BOLD}COMPONENTS:${C_RESET}
   all (default), zsh, p10k, konsole, prompts, atuin, micro, btop
@@ -714,6 +715,43 @@ cmd_bench() {
 }
 
 # -----------------------------------------------------------------------------
+# Command: update (Git Pull + Apply — safe for remote hosts, zero installs)
+# -----------------------------------------------------------------------------
+cmd_update() {
+  if [[ ! -d "$REPO_ROOT/.git" ]]; then
+    log_err "Not a git repository: $REPO_ROOT"
+    exit 1
+  fi
+
+  local before_head
+  before_head="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "none")"
+
+  # Fetch + fast-forward only (aborts on divergence — safe, no merge commits)
+  log_info "Pulling latest changes from origin..."
+  if ! git -C "$REPO_ROOT" pull --ff-only 2>&1; then
+    log_err "git pull --ff-only failed (local diverged from remote?)"
+    log_err "Run 'dots status' to inspect, then resolve manually."
+    exit 1
+  fi
+
+  local after_head
+  after_head="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "none")"
+
+  if [[ "$before_head" == "$after_head" ]]; then
+    log_ok "Already up to date."
+  else
+    local commits_pulled
+    commits_pulled="$(git -C "$REPO_ROOT" log --oneline "${before_head}..${after_head}" 2>/dev/null | wc -l)"
+    log_ok "Pulled ${commits_pulled} commit(s)."
+    git -C "$REPO_ROOT" log --oneline "${before_head}..${after_head}" | sed "s/^/    /"
+  fi
+
+  # Apply all configs
+  printf "\n"
+  cmd_apply all
+}
+
+# -----------------------------------------------------------------------------
 # Command: backup (List / Restore Backups)
 # -----------------------------------------------------------------------------
 cmd_backup() {
@@ -773,6 +811,7 @@ main() {
     doctor|check)    cmd_doctor "$@" ;;
     bench|benchmark) cmd_bench "$@" ;;
     backup|bk)       cmd_backup "$@" ;;
+    update|up)       cmd_update "$@" ;;
     -h|--help|help)  usage ;;
     *)
       log_err "Unknown command: $cmd"
