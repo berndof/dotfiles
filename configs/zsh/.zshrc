@@ -202,10 +202,3 @@ alias dbench="dots bench"
 alias oc-remote="oc-remote"
 alias ocd="oc-remote"
 
-# Agent Sandbox (sbx) — Produtividade Diária
-alias sbxm="sbx make"
-alias sbxw="sbx wp"
-alias sbxe="sbx exec"
-alias sbxt="sbx self-test"
-alias sbxd="sbx doctor"
-alias dash="sbx-dash"
