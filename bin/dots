@@ -14,8 +14,15 @@ while [[ -L "$SOURCE" ]]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_PATH="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)/$(basename "$SOURCE")"
 MANIFEST="$REPO_ROOT/configs/manifest.tsv"
+PROFILES_FILE="$REPO_ROOT/configs/profiles.tsv"
 BACKUP_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/dotfiles-backups"
+DOTS_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dots"
+DOTS_CONFIG_FILE="$DOTS_CONFIG_DIR/config"
+DOTS_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dots"
+UPDATE_CACHE_FILE="$DOTS_CACHE_DIR/update-check.env"
+CLI_PROFILE_OVERRIDE="${DOTS_PROFILE:-}"
 
 # Colors
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -42,24 +49,34 @@ usage() {
 ${C_BOLD}${C_MAUVE}dots${C_RESET} — Terminal Environment & Dotfiles Manager (${C_DIM}${REPO_ROOT}${C_RESET})
 
 ${C_BOLD}USAGE:${C_RESET}
-  dots <command> [options]
+  dots [--profile <name>] <command> [options]
 
 ${C_BOLD}COMMANDS:${C_RESET}
-  ${C_CYAN}status${C_RESET}  [component]                  Compare live system (~/) vs repository configs
-  ${C_CYAN}diff${C_RESET}    [component]                  Show unified diff between repo and live files
-  ${C_CYAN}collect${C_RESET} [component] [-c "msg"] [-p]  Capture live configs from ~/ into repository
-  ${C_CYAN}apply${C_RESET}   [component] [--dry-run]      Apply repository configs to ~/ (with auto-backup)
-  ${C_CYAN}theme${C_RESET}   [list|konsole|prompt]        Inspect or switch Konsole colorscheme / Zsh prompt
-  ${C_CYAN}doctor${C_RESET}                               Verify CLI tools, fonts, Zinit plugins & hygiene
-  ${C_CYAN}bench${C_RESET}   [runs]                       Benchmark interactive Zsh startup latency (ms)
-  ${C_CYAN}backup${C_RESET}  [list|restore <id>]          List or restore automatic pre-apply backups
-  ${C_CYAN}update${C_RESET}                               Pull latest from origin and apply all configs (remote-safe)
+  ${C_CYAN}status${C_RESET}       [component|all]                  Compare live system (~/) vs repository configs (default: profile)
+  ${C_CYAN}diff${C_RESET}         [component|all]                  Show unified diff between repo and live files (default: profile)
+  ${C_CYAN}collect${C_RESET}      [component|all] [-c "msg"] [-p]  Capture live configs from ~/ into repository
+  ${C_CYAN}apply${C_RESET}        [component|all] [--dry-run]      Apply repository configs to ~/ (with auto-backup)
+  ${C_CYAN}profile${C_RESET}      [select|list|get|set <name>|auto] Inspect or switch machine profile (~/.config/dots/config)
+  ${C_CYAN}check-update${C_RESET} [--cached|--enable|--disable]     Check upstream repository updates & manage auto-check
+  ${C_CYAN}theme${C_RESET}        [list|konsole|prompt]            Inspect or switch Konsole colorscheme / Zsh prompt
+  ${C_CYAN}doctor${C_RESET}                                        Verify CLI tools, fonts, Zinit plugins & hygiene
+  ${C_CYAN}bench${C_RESET}        [runs]                           Benchmark interactive Zsh startup latency (ms)
+  ${C_CYAN}backup${C_RESET}       [list|restore <id>]              List or restore automatic pre-apply backups
+  ${C_CYAN}update${C_RESET}       [--check] [--dry-run]            Pull latest from origin and apply profile configs (remote-safe)
+
+${C_BOLD}PROFILES:${C_RESET}
+  desktop, wsl, server, minimal (persisted in ~/.config/dots/config; override with --profile or DOTS_PROFILE)
 
 ${C_BOLD}COMPONENTS:${C_RESET}
-  all (default), zsh, p10k, konsole, prompts, atuin, micro, btop
+  profile (default), all, zsh, p10k, git, konsole, prompts, atuin, micro, btop, fastfetch
 
 ${C_BOLD}EXAMPLES:${C_RESET}
   dots status
+  dots status all
+  dots profile
+  dots profile set server --apply
+  dots check-update
+  dots update --check
   dots diff zsh
   dots collect -c "feat(zsh): add new alias" -p
   dots apply konsole
@@ -70,12 +87,287 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
-# Helpers: Manifest Reader & Secret Scanner
+# Helpers: Local Config, Cache, Profiles, Manifest & Secret Scanner
 # -----------------------------------------------------------------------------
+read_kv_file_key() {
+  local file="$1"
+  local key="$2"
+  local default="${3:-}"
+  if [[ ! -f "$file" ]]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local line val=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" == "${key}="* ]]; then
+      val="${line#*=}"
+    fi
+  done < "$file"
+  if [[ -n "$val" ]]; then
+    printf '%s\n' "$val"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
+write_local_config_key() {
+  local key="$1"
+  local value="$2"
+  mkdir -p "$DOTS_CONFIG_DIR"
+  chmod 700 "$DOTS_CONFIG_DIR" 2>/dev/null || true
+
+  local tmp_file
+  tmp_file="$(mktemp "$DOTS_CONFIG_DIR/config.XXXXXX")"
+  local found=0
+
+  if [[ -f "$DOTS_CONFIG_FILE" ]]; then
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "${key}="* ]]; then
+        if (( found == 0 )); then
+          printf '%s=%s\n' "$key" "$value" >> "$tmp_file"
+          found=1
+        fi
+      else
+        printf '%s\n' "$line" >> "$tmp_file"
+      fi
+    done < "$DOTS_CONFIG_FILE"
+  else
+    printf '# dots local machine configuration (untracked)\n' >> "$tmp_file"
+  fi
+
+  if (( found == 0 )); then
+    printf '%s=%s\n' "$key" "$value" >> "$tmp_file"
+  fi
+
+  mv "$tmp_file" "$DOTS_CONFIG_FILE"
+}
+
+normalize_profile_name() {
+  local name="${1:-}"
+  case "$name" in
+    ssh|headless|remote) printf 'server\n' ;;
+    *) printf '%s\n' "$name" ;;
+  esac
+}
+
+is_valid_profile() {
+  local norm
+  norm="$(normalize_profile_name "${1:-}")"
+  [[ -n "$norm" && -f "$PROFILES_FILE" ]] || return 1
+  local p _rest
+  while IFS=$'\t' read -r p _rest; do
+    [[ -z "$p" || "$p" =~ ^# ]] && continue
+    [[ "$p" == "$norm" ]] && return 0
+  done < "$PROFILES_FILE"
+  return 1
+}
+
+validate_cli_profile_override() {
+  if [[ -n "$CLI_PROFILE_OVERRIDE" ]]; then
+    local norm
+    norm="$(normalize_profile_name "$CLI_PROFILE_OVERRIDE")"
+    if ! is_valid_profile "$norm"; then
+      log_err "Unknown profile '$CLI_PROFILE_OVERRIDE'. Valid profiles: desktop, wsl, server, minimal"
+      exit 1
+    fi
+  fi
+}
+
+detect_suggested_profile() {
+  if [[ -n "${WSL_DISTRO_NAME:-}" || -f /proc/sys/fs/binfmt_misc/WSLInterop ]] || grep -qi microsoft /proc/version 2>/dev/null; then
+    printf 'wsl\n'
+  elif [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_CLIENT:-}" || -n "${SSH_TTY:-}" ]]; then
+    printf 'server\n'
+  elif [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    printf 'server\n'
+  else
+    printf 'desktop\n'
+  fi
+}
+
+get_active_profile() {
+  if [[ -n "$CLI_PROFILE_OVERRIDE" ]]; then
+    local norm
+    norm="$(normalize_profile_name "$CLI_PROFILE_OVERRIDE")"
+    if ! is_valid_profile "$norm"; then
+      log_err "Unknown profile '$CLI_PROFILE_OVERRIDE'. Valid profiles: desktop, wsl, server, minimal"
+      exit 1
+    fi
+    printf '%s\n' "$norm"
+    return 0
+  fi
+
+  local saved
+  saved="$(read_kv_file_key "$DOTS_CONFIG_FILE" "PROFILE" "")"
+  if [[ -n "$saved" ]] && is_valid_profile "$saved"; then
+    normalize_profile_name "$saved"
+    return 0
+  fi
+
+  detect_suggested_profile
+}
+
+get_profile_source() {
+  if [[ -n "$CLI_PROFILE_OVERRIDE" ]]; then
+    printf 'override\n'
+    return 0
+  fi
+  local saved
+  saved="$(read_kv_file_key "$DOTS_CONFIG_FILE" "PROFILE" "")"
+  if [[ -n "$saved" ]] && is_valid_profile "$saved"; then
+    printf 'saved\n'
+  else
+    printf 'auto-detected\n'
+  fi
+}
+
+get_profile_field() {
+  local target_profile
+  target_profile="$(normalize_profile_name "$1")"
+  local col_index="$2"
+  [[ -f "$PROFILES_FILE" ]] || return 1
+
+  local p comps flags fonts desc
+  while IFS=$'\t' read -r p comps flags fonts desc; do
+    [[ -z "$p" || "$p" =~ ^# ]] && continue
+    if [[ "$p" == "$target_profile" ]]; then
+      case "$col_index" in
+        1) printf '%s\n' "$p" ;;
+        2) printf '%s\n' "$comps" ;;
+        3) printf '%s\n' "$flags" ;;
+        4) printf '%s\n' "$fonts" ;;
+        5) printf '%s\n' "$desc" ;;
+      esac
+      return 0
+    fi
+  done < "$PROFILES_FILE"
+  return 1
+}
+
+profile_has_component() {
+  local profile="$1"
+  local comp="$2"
+  local comps
+  comps="$(get_profile_field "$profile" 2 || true)"
+  [[ -n "$comps" ]] && [[ ",${comps}," == *",${comp},"* ]]
+}
+
 matches_filter() {
   local comp="$1"
-  local filter="${2:-all}"
-  [[ "$filter" == "all" || "$filter" == "$comp" ]]
+  local filter="${2:-profile}"
+  if [[ "$filter" == "all" ]]; then
+    return 0
+  elif [[ "$filter" == "profile" ]]; then
+    profile_has_component "$(get_active_profile)" "$comp"
+  else
+    [[ "$filter" == "$comp" ]]
+  fi
+}
+
+format_filter_label() {
+  local filter="$1"
+  if [[ "$filter" == "profile" ]]; then
+    printf 'profile: %s' "$(get_active_profile)"
+  else
+    printf '%s' "$filter"
+  fi
+}
+
+get_git_upstream() {
+  local upstream=""
+  upstream="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [[ -z "$upstream" ]] && git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    upstream="origin/main"
+  elif [[ -z "$upstream" ]] && git -C "$REPO_ROOT" rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+    upstream="origin/master"
+  fi
+  printf '%s\n' "$upstream"
+}
+
+write_update_cache() {
+  local last_epoch="$1"
+  local behind="$2"
+  local ahead="$3"
+  local local_head="$4"
+  local remote_head="$5"
+  local upstream="$6"
+  local subject="$7"
+
+  mkdir -p "$DOTS_CACHE_DIR"
+  local tmp_file
+  tmp_file="$(mktemp "$DOTS_CACHE_DIR/update-check.XXXXXX")"
+  cat > "$tmp_file" <<EOF
+LAST_CHECK_EPOCH=${last_epoch}
+REMOTE_BEHIND=${behind}
+REMOTE_AHEAD=${ahead}
+LOCAL_HEAD=${local_head}
+REMOTE_HEAD=${remote_head}
+UPSTREAM=${upstream}
+REPO_ROOT=${REPO_ROOT}
+LATEST_SUBJECT=${subject}
+EOF
+  mv "$tmp_file" "$UPDATE_CACHE_FILE"
+}
+
+refresh_update_cache_from_git() {
+  local last_epoch="${1:-}"
+  if [[ -z "$last_epoch" ]]; then
+    last_epoch="$(read_kv_file_key "$UPDATE_CACHE_FILE" "LAST_CHECK_EPOCH" "0")"
+  fi
+  [[ -d "$REPO_ROOT/.git" ]] || return 0
+
+  local upstream local_head remote_head="" ahead=0 behind=0 subject=""
+  upstream="$(get_git_upstream)"
+  local_head="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+
+  if [[ -n "$upstream" ]] && git -C "$REPO_ROOT" rev-parse --verify --quiet "$upstream" >/dev/null 2>&1; then
+    remote_head="$(git -C "$REPO_ROOT" rev-parse "$upstream" 2>/dev/null || echo "")"
+    local counts
+    counts="$(git -C "$REPO_ROOT" rev-list --left-right --count "HEAD...${upstream}" 2>/dev/null || echo "0 0")"
+    read -r ahead behind <<< "$counts"
+    ahead="${ahead:-0}"
+    behind="${behind:-0}"
+    if (( behind > 0 )); then
+      subject="$(git -C "$REPO_ROOT" log -1 --format='%s' "$upstream" 2>/dev/null | tr -d '\n\r$`' | cut -c1-72 || true)"
+    fi
+  fi
+
+  write_update_cache "$last_epoch" "$behind" "$ahead" "$local_head" "$remote_head" "${upstream:-none}" "$subject"
+}
+
+format_epoch_age() {
+  local epoch="${1:-0}"
+  if [[ -z "$epoch" || ! "$epoch" =~ ^[0-9]+$ || "$epoch" -le 0 ]]; then
+    printf 'never\n'
+    return 0
+  fi
+  local now delta
+  now="$(date +%s)"
+  delta=$(( now - epoch ))
+  if (( delta < 0 )); then
+    printf 'backoff\n'
+  elif (( delta < 60 )); then
+    printf 'just now\n'
+  elif (( delta < 3600 )); then
+    printf '%dm ago\n' "$(( delta / 60 ))"
+  elif (( delta < 86400 )); then
+    printf '%dh ago\n' "$(( delta / 3600 ))"
+  else
+    printf '%dd ago\n' "$(( delta / 86400 ))"
+  fi
+}
+
+run_git_fetch() {
+  local remote="${1:-origin}"
+  local git_ssh="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}"
+  local cmd=(git -C "$REPO_ROOT" fetch --quiet "$remote")
+  if command -v timeout >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$git_ssh" timeout 8 "${cmd[@]}" </dev/null >/dev/null 2>&1
+  else
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$git_ssh" "${cmd[@]}" </dev/null >/dev/null 2>&1
+  fi
 }
 
 scan_secrets() {
@@ -117,12 +409,37 @@ get_active_prompt_engine() {
 # Command: status
 # -----------------------------------------------------------------------------
 cmd_status() {
-  local filter="${1:-all}"
+  local filter="profile"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
+        shift
+        ;;
+      *)
+        filter="$1"
+        shift
+        ;;
+    esac
+  done
+
   local in_sync=0 drifted=0 missing=0
+  local active_profile profile_source
+  active_profile="$(get_active_profile)"
+  profile_source="$(get_profile_source)"
 
   printf "\n${C_BOLD}${C_MAUVE}╭─ Terminal Environment Status${C_RESET} (${C_DIM}%s${C_RESET})\n" "$REPO_ROOT"
-  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Konsole Theme : ${C_CYAN}%s${C_RESET}\n" "$(get_active_konsole_scheme)"
-  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Prompt Engine : ${C_CYAN}%s${C_RESET}\n" "$(get_active_prompt_engine)"
+  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Machine Profile : ${C_CYAN}%s${C_RESET} ${C_DIM}(%s)${C_RESET}\n" "$active_profile" "$profile_source"
+  if matches_filter "konsole" "$filter"; then
+    printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Konsole Theme   : ${C_CYAN}%s${C_RESET}\n" "$(get_active_konsole_scheme)"
+  fi
+  printf "${C_BOLD}${C_MAUVE}│${C_RESET}  Prompt Engine   : ${C_CYAN}%s${C_RESET}\n" "$(get_active_prompt_engine)"
   printf "${C_BOLD}${C_MAUVE}╰──────────────────────────────────────────────────────────────────────────${C_RESET}\n\n"
 
   printf "  ${C_BOLD}%-10s %-34s %-22s %s${C_RESET}\n" "COMPONENT" "TARGET (~)" "STATUS" "DESCRIPTION"
@@ -197,10 +514,37 @@ cmd_status() {
     local git_changes
     git_changes="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null | wc -l)"
     if (( git_changes > 0 )); then
-      printf "  ${C_BOLD}Git Repo:${C_RESET} ${C_YELLOW}%d uncommitted change(s) in repository${C_RESET} (run ${C_CYAN}git -C %s status${C_RESET})\n" "$git_changes" "$REPO_ROOT"
+      printf "  ${C_BOLD}Git Repo:${C_RESET}    ${C_YELLOW}%d uncommitted change(s) in repository${C_RESET} (run ${C_CYAN}git -C %s status${C_RESET})\n" "$git_changes" "$REPO_ROOT"
     else
-      printf "  ${C_BOLD}Git Repo:${C_RESET} ${C_GREEN}working tree clean${C_RESET}\n"
+      printf "  ${C_BOLD}Git Repo:${C_RESET}    ${C_GREEN}working tree clean${C_RESET}\n"
     fi
+
+    local upstream ahead=0 behind=0 last_epoch age auto_check remote_msg=""
+    upstream="$(get_git_upstream)"
+    if [[ -n "$upstream" ]] && git -C "$REPO_ROOT" rev-parse --verify --quiet "$upstream" >/dev/null 2>&1; then
+      local counts
+      counts="$(git -C "$REPO_ROOT" rev-list --left-right --count "HEAD...${upstream}" 2>/dev/null || echo "0 0")"
+      read -r ahead behind <<< "$counts"
+      ahead="${ahead:-0}"
+      behind="${behind:-0}"
+    fi
+    last_epoch="$(read_kv_file_key "$UPDATE_CACHE_FILE" "LAST_CHECK_EPOCH" "0")"
+    age="$(format_epoch_age "$last_epoch")"
+    auto_check="$(read_kv_file_key "$DOTS_CONFIG_FILE" "UPDATE_CHECK" "1")"
+
+    if [[ -z "$upstream" ]]; then
+      remote_msg="${C_DIM}no upstream tracking branch${C_RESET}"
+    elif (( behind > 0 && ahead > 0 )); then
+      remote_msg="${C_YELLOW}diverged from ${upstream} (${ahead} ahead, ${behind} behind)${C_RESET} ${C_DIM}· checked ${age}${C_RESET}"
+    elif (( behind > 0 )); then
+      remote_msg="${C_YELLOW}${behind} commit(s) behind ${upstream}${C_RESET} (run ${C_CYAN}dots update${C_RESET}) ${C_DIM}· checked ${age}${C_RESET}"
+    elif (( ahead > 0 )); then
+      remote_msg="${C_CYAN}${ahead} commit(s) ahead of ${upstream}${C_RESET} ${C_DIM}· checked ${age}${C_RESET}"
+    else
+      remote_msg="${C_GREEN}up to date with ${upstream}${C_RESET} ${C_DIM}· checked ${age}${C_RESET}"
+    fi
+    [[ "$auto_check" == "0" ]] && remote_msg+=" ${C_DIM}· auto-check off${C_RESET}"
+    printf "  ${C_BOLD}Remote Sync:${C_RESET} %s\n" "$remote_msg"
   fi
   printf "\n"
 }
@@ -209,7 +553,26 @@ cmd_status() {
 # Command: diff
 # -----------------------------------------------------------------------------
 cmd_diff() {
-  local filter="${1:-all}"
+  local filter="profile"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
+        shift
+        ;;
+      *)
+        filter="$1"
+        shift
+        ;;
+    esac
+  done
+
   local found_diff=0
 
   while IFS=$'\t' read -r comp repo_rel target_rel desc; do
@@ -252,7 +615,7 @@ cmd_diff() {
   fi
 
   if (( found_diff == 0 )); then
-    log_ok "No differences between repository and live system (${filter})."
+    log_ok "No differences between repository and live system ($(format_filter_label "$filter"))."
   fi
 }
 
@@ -260,7 +623,7 @@ cmd_diff() {
 # Command: collect (Live System ~/ -> Repository)
 # -----------------------------------------------------------------------------
 cmd_collect() {
-  local filter="all"
+  local filter="profile"
   local commit_msg=""
   local do_push=0
 
@@ -272,6 +635,16 @@ cmd_collect() {
         ;;
       -p|--push)
         do_push=1
+        shift
+        ;;
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
         shift
         ;;
       *)
@@ -328,7 +701,7 @@ cmd_collect() {
   fi
 
   if (( count == 0 )); then
-    log_info "All tracked files for '${filter}' are already up to date in the repository."
+    log_info "All tracked files for '$(format_filter_label "$filter")' are already up to date in the repository."
   else
     log_ok "Collected $count updated file(s) into repository."
   fi
@@ -341,6 +714,7 @@ cmd_collect() {
       if (( do_push == 1 )); then
         git -C "$REPO_ROOT" push
         log_ok "Pushed changes to remote origin."
+        refresh_update_cache_from_git "$(date +%s)"
       fi
     else
       log_info "No staged changes to commit."
@@ -352,7 +726,7 @@ cmd_collect() {
 # Command: apply (Repository -> Live System ~/)
 # -----------------------------------------------------------------------------
 cmd_apply() {
-  local filter="all"
+  local filter="profile"
   local no_backup=0
   local dry_run=0
 
@@ -360,6 +734,16 @@ cmd_apply() {
     case "$1" in
       --no-backup) no_backup=1; shift ;;
       --dry-run|-n) dry_run=1; shift ;;
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
+        shift
+        ;;
       *) filter="$1"; shift ;;
     esac
   done
@@ -436,10 +820,404 @@ cmd_apply() {
   fi
 
   if (( applied == 0 )); then
-    log_ok "Live environment is already in sync with repository (${filter})."
+    log_ok "Live environment is already in sync with repository ($(format_filter_label "$filter"))."
   else
-    log_ok "Applied $applied configuration file(s)."
+    log_ok "Applied $applied configuration file(s) ($(format_filter_label "$filter"))."
   fi
+}
+
+# -----------------------------------------------------------------------------
+# Command: profile (Machine Environment Profile Selector)
+# -----------------------------------------------------------------------------
+cmd_profile() {
+  local sub="${1:-}"
+  if [[ -z "$sub" ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+      sub="select"
+    else
+      sub="list"
+    fi
+  else
+    shift || true
+  fi
+
+  case "$sub" in
+    list|ls)
+      local active source_kind suggested
+      active="$(get_active_profile)"
+      source_kind="$(get_profile_source)"
+      suggested="$(detect_suggested_profile)"
+
+      printf "\n${C_BOLD}${C_MAUVE}=== Machine Profiles ===${C_RESET}\n"
+      printf "  Active: ${C_CYAN}%s${C_RESET} ${C_DIM}(%s)${C_RESET} · Auto-detected: ${C_GREEN}%s${C_RESET}\n" "$active" "$source_kind" "$suggested"
+      printf "  Config: ${C_DIM}%s${C_RESET}\n\n" "$DOTS_CONFIG_FILE"
+
+      local p comps flags fonts desc
+      while IFS=$'\t' read -r p comps flags fonts desc; do
+        [[ -z "$p" || "$p" =~ ^# ]] && continue
+        local tags=""
+        [[ "$p" == "$active" ]] && tags+=" ${C_GREEN}[active]${C_RESET}"
+        [[ "$p" == "$suggested" ]] && tags+=" ${C_DIM}[suggested]${C_RESET}"
+        if [[ "$p" == "$active" ]]; then
+          printf "  ${C_GREEN}● %-9s${C_RESET} %s%s\n" "$p" "$desc" "$tags"
+        else
+          printf "  ${C_DIM}○${C_RESET} %-9s %s%s\n" "$p" "$desc" "$tags"
+        fi
+        printf "    ${C_DIM}components: %s · bootstrap: %s · fonts: %s${C_RESET}\n" "$comps" "$flags" "$([[ "$fonts" == "1" ]] && echo yes || echo no)"
+      done < "$PROFILES_FILE"
+      printf "\n${C_DIM}Switch interactively: dots profile  OR  non-interactively: dots profile set <name> [--apply]${C_RESET}\n\n"
+      ;;
+
+    get|current)
+      get_active_profile
+      ;;
+
+    flags|bootstrap-flags)
+      local target="${1:-}"
+      if [[ -z "$target" ]]; then
+        target="$(get_active_profile)"
+      else
+        target="$(normalize_profile_name "$target")"
+        if ! is_valid_profile "$target"; then
+          log_err "Unknown profile '$1'. Valid profiles: desktop, wsl, server, minimal"
+          exit 1
+        fi
+      fi
+      get_profile_field "$target" 3
+      ;;
+
+    check-fonts)
+      local target="${1:-}"
+      if [[ -z "$target" ]]; then
+        target="$(get_active_profile)"
+      else
+        target="$(normalize_profile_name "$target")"
+        if ! is_valid_profile "$target"; then
+          log_err "Unknown profile '$1'. Valid profiles: desktop, wsl, server, minimal"
+          exit 1
+        fi
+      fi
+      get_profile_field "$target" 4
+      ;;
+
+    show|preview)
+      local target="${1:-}"
+      if [[ -z "$target" ]]; then
+        target="$(get_active_profile)"
+      else
+        target="$(normalize_profile_name "$target")"
+      fi
+      if ! is_valid_profile "$target"; then
+        log_err "Unknown profile '$target'."
+        exit 1
+      fi
+      local comps flags fonts desc
+      comps="$(get_profile_field "$target" 2)"
+      flags="$(get_profile_field "$target" 3)"
+      fonts="$(get_profile_field "$target" 4)"
+      desc="$(get_profile_field "$target" 5)"
+
+      printf "${C_BOLD}${C_MAUVE}Profile:${C_RESET} ${C_CYAN}%s${C_RESET}\n" "$target"
+      printf "${C_DIM}%s${C_RESET}\n\n" "$desc"
+      printf "${C_BOLD}Bootstrap steps:${C_RESET} %s\n" "$flags"
+      printf "${C_BOLD}Check/install fonts:${C_RESET} %s\n\n" "$([[ "$fonts" == "1" ]] && echo yes || echo no)"
+      printf "${C_BOLD}Tracked targets:${C_RESET}\n"
+      local comp repo_rel target_rel _m_desc
+      while IFS=$'\t' read -r comp repo_rel target_rel _m_desc; do
+        [[ -z "$comp" || "$comp" =~ ^# ]] && continue
+        if profile_has_component "$target" "$comp"; then
+          printf "  ${C_GREEN}✔${C_RESET} %-10s ~/%s\n" "$comp" "$target_rel"
+        fi
+      done < "$MANIFEST"
+      if profile_has_component "$target" "konsole"; then
+        printf "  ${C_GREEN}✔${C_RESET} %-10s ~/.local/share/konsole/*.colorscheme\n" "konsole"
+      fi
+      ;;
+
+    set)
+      local target="" do_apply=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --apply) do_apply=1; shift ;;
+          *) target="$1"; shift ;;
+        esac
+      done
+      if [[ -z "$target" ]]; then
+        log_err "Usage: dots profile set <desktop|wsl|server|minimal> [--apply]"
+        exit 1
+      fi
+      local norm
+      norm="$(normalize_profile_name "$target")"
+      if ! is_valid_profile "$norm"; then
+        log_err "Unknown profile '$target'. Valid profiles: desktop, wsl, server, minimal"
+        exit 1
+      fi
+      write_local_config_key "PROFILE" "$norm"
+      CLI_PROFILE_OVERRIDE=""
+      log_ok "Active machine profile set to '${norm}' (saved in $DOTS_CONFIG_FILE)."
+      if (( do_apply == 1 )); then
+        printf "\n"
+        cmd_apply profile
+      fi
+      ;;
+
+    auto)
+      local do_apply=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --apply) do_apply=1; shift ;;
+          *) log_err "Unknown option for 'dots profile auto': $1"; exit 1 ;;
+        esac
+      done
+      local suggested
+      suggested="$(detect_suggested_profile)"
+      write_local_config_key "PROFILE" "$suggested"
+      CLI_PROFILE_OVERRIDE=""
+      log_ok "Auto-detected machine profile '${suggested}' saved to $DOTS_CONFIG_FILE."
+      if (( do_apply == 1 )); then
+        printf "\n"
+        cmd_apply profile
+      fi
+      ;;
+
+    select)
+      if [[ ! -t 0 || ! -t 1 ]]; then
+        log_err "Interactive profile selector requires a TTY. Use 'dots profile list' or 'dots profile set <name>'."
+        exit 1
+      fi
+
+      local active source_kind suggested chosen=""
+      active="$(get_active_profile)"
+      source_kind="$(get_profile_source)"
+      suggested="$(detect_suggested_profile)"
+
+      if command -v fzf >/dev/null 2>&1; then
+        local rows=() p comps flags fonts desc
+        while IFS=$'\t' read -r p comps flags fonts desc; do
+          [[ -z "$p" || "$p" =~ ^# ]] && continue
+          local tags=""
+          [[ "$p" == "$active" ]] && tags+=" [active]"
+          [[ "$p" == "$suggested" ]] && tags+=" [suggested]"
+          rows+=("$(printf '%s\t%-9s %s%s' "$p" "$p" "$desc" "$tags")")
+        done < "$PROFILES_FILE"
+
+        local self_quoted selection="" rc=0
+        self_quoted="$(printf '%q' "$SOURCE_PATH")"
+        set +e
+        selection="$(printf '%s\n' "${rows[@]}" | fzf \
+          --delimiter=$'\t' \
+          --with-nth=2.. \
+          --height=45% \
+          --layout=reverse \
+          --border=rounded \
+          --prompt="Profile ▶ " \
+          --header="Active: ${active} (${source_kind}) · Suggested: ${suggested}" \
+          --preview="${self_quoted} profile show {1}" \
+          --preview-window="right:50%:wrap" \
+          --color="fg:#839496,bg:#002b36,hl:#b58900,fg+:#eee8d5,bg+:#073642,hl+:#cb4b16,info:#268bd2,prompt:#859900,pointer:#2aa198,marker:#859900,header:#586e75,border:#073642")"
+        rc=$?
+        set -e
+
+        if (( rc != 0 )) || [[ -z "$selection" ]]; then
+          log_info "Profile selection cancelled."
+          return 0
+        fi
+        chosen="${selection%%$'\t'*}"
+      else
+        printf "\n${C_BOLD}${C_MAUVE}=== Select Machine Profile ===${C_RESET}\n"
+        printf "  Active: ${C_CYAN}%s${C_RESET} (%s) · Suggested: ${C_GREEN}%s${C_RESET}\n\n" "$active" "$source_kind" "$suggested"
+        local profiles=() idx=1 p comps flags fonts desc
+        while IFS=$'\t' read -r p comps flags fonts desc; do
+          [[ -z "$p" || "$p" =~ ^# ]] && continue
+          profiles+=("$p")
+          local marker=" "
+          [[ "$p" == "$active" ]] && marker="${C_GREEN}●${C_RESET}"
+          local tag=""
+          [[ "$p" == "$suggested" ]] && tag=" ${C_DIM}[suggested]${C_RESET}"
+          printf "  %s %d) ${C_BOLD}%-9s${C_RESET} %s%s\n" "$marker" "$idx" "$p" "$desc" "$tag"
+          ((idx+=1))
+        done < "$PROFILES_FILE"
+
+        printf "\n"
+        local choice=""
+        read -r -p "Choose profile [1-${#profiles[@]}] or name (Enter = ${active}): " choice
+        if [[ -z "$choice" ]]; then
+          chosen="$active"
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#profiles[@]} )); then
+          chosen="${profiles[$((choice - 1))]}"
+        else
+          chosen="$(normalize_profile_name "$choice")"
+        fi
+
+        if ! is_valid_profile "$chosen"; then
+          log_err "Invalid profile selection '$choice'."
+          exit 1
+        fi
+      fi
+
+      write_local_config_key "PROFILE" "$chosen"
+      CLI_PROFILE_OVERRIDE=""
+      log_ok "Active machine profile set to '${chosen}' (saved in $DOTS_CONFIG_FILE)."
+
+      local apply_now="n"
+      read -r -p "Apply '${chosen}' profile configs to ~/ now? [y/N]: " apply_now
+      if [[ "$apply_now" =~ ^[Yy]$ ]]; then
+        printf "\n"
+        cmd_apply profile
+      fi
+      ;;
+
+    *)
+      log_err "Unknown profile subcommand: $sub (expected: select, list, get, set, auto, show, flags)"
+      exit 1
+      ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# Command: check-update (Upstream Git Update Checker & Cache)
+# -----------------------------------------------------------------------------
+cmd_check_update() {
+  local quiet=0
+  local cached_only=0
+  local action=""
+  local interval_val=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --quiet|-q) quiet=1; shift ;;
+      --cached) cached_only=1; shift ;;
+      --enable) action="enable"; shift ;;
+      --disable) action="disable"; shift ;;
+      --interval)
+        interval_val="${2:-}"
+        if [[ -z "$interval_val" || ! "$interval_val" =~ ^[1-9][0-9]*$ ]]; then
+          log_err "Usage: dots check-update --interval <hours> (positive integer)"
+          exit 1
+        fi
+        action="interval"
+        shift 2
+        ;;
+      --interval=*)
+        interval_val="${1#*=}"
+        if [[ -z "$interval_val" || ! "$interval_val" =~ ^[1-9][0-9]*$ ]]; then
+          log_err "Usage: dots check-update --interval <hours> (positive integer)"
+          exit 1
+        fi
+        action="interval"
+        shift
+        ;;
+      *)
+        log_err "Unknown option for check-update: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ "$action" == "enable" ]]; then
+    write_local_config_key "UPDATE_CHECK" "1"
+    log_ok "Background update check enabled in $DOTS_CONFIG_FILE."
+    return 0
+  elif [[ "$action" == "disable" ]]; then
+    write_local_config_key "UPDATE_CHECK" "0"
+    log_ok "Background update check disabled in $DOTS_CONFIG_FILE."
+    return 0
+  elif [[ "$action" == "interval" ]]; then
+    write_local_config_key "UPDATE_INTERVAL_HOURS" "$interval_val"
+    log_ok "Background update check interval set to ${interval_val}h in $DOTS_CONFIG_FILE."
+    return 0
+  fi
+
+  if [[ ! -d "$REPO_ROOT/.git" ]]; then
+    if (( quiet == 1 )); then
+      return 0
+    fi
+    log_err "Not a git repository: $REPO_ROOT"
+    exit 1
+  fi
+
+  local upstream remote
+  upstream="$(get_git_upstream)"
+  remote="origin"
+  if [[ "$upstream" == */* ]]; then
+    remote="${upstream%%/*}"
+  fi
+
+  if (( quiet == 1 )); then
+    local lock_dir="$DOTS_CACHE_DIR/update-check.lock"
+    mkdir -p "$DOTS_CACHE_DIR"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+      local now mtime
+      now="$(date +%s)"
+      mtime="$(stat -c %Y "$lock_dir" 2>/dev/null || echo "$now")"
+      if (( now - mtime > 120 )); then
+        rmdir "$lock_dir" 2>/dev/null || rm -rf "$lock_dir" 2>/dev/null || true
+        mkdir "$lock_dir" 2>/dev/null || return 0
+      else
+        return 0
+      fi
+    fi
+
+    if (( cached_only == 1 )); then
+      refresh_update_cache_from_git ""
+    elif run_git_fetch "$remote"; then
+      refresh_update_cache_from_git "$(date +%s)"
+    else
+      local interval_h now backoff_epoch
+      interval_h="$(read_kv_file_key "$DOTS_CONFIG_FILE" "UPDATE_INTERVAL_HOURS" "12")"
+      [[ "$interval_h" =~ ^[1-9][0-9]*$ ]] || interval_h=12
+      now="$(date +%s)"
+      backoff_epoch=$(( now - (interval_h * 3600) + 900 ))
+      (( backoff_epoch < 0 )) && backoff_epoch=0
+      refresh_update_cache_from_git "$backoff_epoch"
+    fi
+
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  if (( cached_only == 0 )); then
+    log_info "Checking upstream '${remote}' for updates..."
+    if run_git_fetch "$remote"; then
+      refresh_update_cache_from_git "$(date +%s)"
+    else
+      log_warn "Could not reach remote '${remote}' (offline or auth unavailable). Showing cached/local state."
+      refresh_update_cache_from_git ""
+    fi
+  else
+    refresh_update_cache_from_git ""
+  fi
+
+  local behind ahead cached_upstream last_epoch age auto_check interval_h
+  behind="$(read_kv_file_key "$UPDATE_CACHE_FILE" "REMOTE_BEHIND" "0")"
+  ahead="$(read_kv_file_key "$UPDATE_CACHE_FILE" "REMOTE_AHEAD" "0")"
+  cached_upstream="$(read_kv_file_key "$UPDATE_CACHE_FILE" "UPSTREAM" "${upstream:-none}")"
+  last_epoch="$(read_kv_file_key "$UPDATE_CACHE_FILE" "LAST_CHECK_EPOCH" "0")"
+  age="$(format_epoch_age "$last_epoch")"
+  auto_check="$(read_kv_file_key "$DOTS_CONFIG_FILE" "UPDATE_CHECK" "1")"
+  interval_h="$(read_kv_file_key "$DOTS_CONFIG_FILE" "UPDATE_INTERVAL_HOURS" "12")"
+
+  if [[ "$cached_upstream" == "none" || -z "$cached_upstream" ]]; then
+    log_warn "No upstream branch configured for HEAD."
+  elif (( behind > 0 && ahead > 0 )); then
+    log_warn "Local branch diverged from ${cached_upstream} (${ahead} ahead, ${behind} behind):"
+    git -C "$REPO_ROOT" log --oneline "HEAD..${cached_upstream}" 2>/dev/null | sed 's/^/    remote: /' || true
+    git -C "$REPO_ROOT" log --oneline "${cached_upstream}..HEAD" 2>/dev/null | sed 's/^/    local:  /' || true
+    log_info "Reconcile git history manually (e.g. 'git pull --rebase' in $REPO_ROOT) before running 'dots update'."
+  elif (( behind > 0 )); then
+    log_warn "${behind} new commit(s) available on ${cached_upstream}:"
+    git -C "$REPO_ROOT" log --oneline "HEAD..${cached_upstream}" 2>/dev/null | sed 's/^/    /' || true
+    log_info "Run 'dots update' (or 'dupdate') to pull and apply."
+  elif (( ahead > 0 )); then
+    log_info "Local branch is ${ahead} commit(s) ahead of ${cached_upstream}."
+  else
+    log_ok "Repository is up to date with ${cached_upstream}."
+  fi
+
+  printf "  ${C_DIM}Auto-check: %s · interval: %sh · last check: %s${C_RESET}\n" \
+    "$([[ "$auto_check" == "1" ]] && echo enabled || echo disabled)" \
+    "$interval_h" \
+    "$age"
 }
 
 # -----------------------------------------------------------------------------
@@ -554,18 +1332,44 @@ cmd_theme() {
 # Command: doctor
 # -----------------------------------------------------------------------------
 cmd_doctor() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
+        shift
+        ;;
+      *)
+        log_err "Unknown option for doctor: $1"
+        exit 1
+        ;;
+    esac
+  done
+
   # O installer coloca binarios em ~/.local/bin (starship, uv, rg, fd...) e em
   # ~/.atuin/bin, mas um bash de login pode nao ter esses diretorios no PATH
   # (tipico em host recem-criado via SSH). Sem este export o doctor acusava
   # starship/uv como MISSING mesmo depois de instalados.
   export PATH="$HOME/.local/bin:$HOME/.atuin/bin:$PATH"
 
-  printf "\n${C_BOLD}${C_MAUVE}=== Dotfiles & Terminal Environment Doctor ===${C_RESET}\n\n"
+  local active_profile profile_source check_fonts req_pkg=1
+  active_profile="$(get_active_profile)"
+  profile_source="$(get_profile_source)"
+  check_fonts="$(get_profile_field "$active_profile" 4 || echo 1)"
+  [[ "$active_profile" == "minimal" ]] && req_pkg=0
+
+  printf "\n${C_BOLD}${C_MAUVE}=== Dotfiles & Terminal Environment Doctor ===${C_RESET}\n"
+  printf "  Machine Profile: ${C_CYAN}%s${C_RESET} ${C_DIM}(%s)${C_RESET}\n\n" "$active_profile" "$profile_source"
 
   local ok_count=0 warn_count=0
 
   check_bin() {
-    local bin="$1" role="$2" extra_path="${3:-}"
+    local bin="$1" role="$2" extra_path="${3:-}" required="${4:-1}"
     local resolved=""
     if command -v "$bin" >/dev/null 2>&1; then
       resolved="$(command -v "$bin")"
@@ -578,6 +1382,8 @@ cmd_doctor() {
       ver="$("$resolved" --version 2>/dev/null | grep -vE '^eza - A modern|^$' | head -n1 | cut -c1-45 || echo "installed")"
       printf "  ${C_GREEN}✔${C_RESET} %-14s %-38s ${C_DIM}(%s)${C_RESET}\n" "$bin" "$ver" "$role"
       ((ok_count+=1))
+    elif [[ "$required" == "0" ]]; then
+      printf "  ${C_BLUE}ℹ${C_RESET} %-14s %-38s ${C_DIM}(%s — optional in %s)${C_RESET}\n" "$bin" "OPTIONAL" "$role" "$active_profile"
     else
       printf "  ${C_YELLOW}✖${C_RESET} %-14s %-38s ${C_DIM}(%s)${C_RESET}\n" "$bin" "MISSING" "$role"
       ((warn_count+=1))
@@ -591,17 +1397,17 @@ cmd_doctor() {
   check_bin fd        "Simple, fast alternative to find" "$HOME/.local/bin/fd"
   check_bin bat       "Cat clone with syntax highlighting" "$HOME/.local/bin/bat"
   check_bin delta     "Syntax-highlighting pager for git" "$HOME/.local/bin/delta"
-  check_bin eza       "Modern ls replacement with icons/git"
-  check_bin fzf       "Fuzzy finder (fzf-tab)"
+  check_bin eza       "Modern ls replacement with icons/git" "" "$req_pkg"
+  check_bin fzf       "Fuzzy finder (fzf-tab)" "" "$req_pkg"
   check_bin zoxide    "Smart directory jumper" "$HOME/.local/bin/zoxide"
   check_bin atuin     "Magical shell history" "$HOME/.atuin/bin/atuin"
-  check_bin direnv    "Per-directory environment loader"
+  check_bin direnv    "Per-directory environment loader" "" "$req_pkg"
   check_bin micro     "Default terminal editor"
-  check_bin btop      "System resource monitor"
+  check_bin btop      "System resource monitor" "" "$req_pkg"
   check_bin duf       "Disk usage/free utility" "$HOME/.local/bin/duf"
-  check_bin fastfetch "Neofetch-like fast system overview"
+  check_bin fastfetch "Neofetch-like fast system overview" "" "$req_pkg"
   check_bin starship  "Alternative cross-shell prompt"
-  check_bin gh        "GitHub CLI"
+  check_bin gh        "GitHub CLI" "" "$req_pkg"
   check_bin uv        "Fast Python package/tool manager" "$HOME/.local/bin/uv"
 
   printf "\n${C_BOLD}2. Shell Plugin Manager & Fonts:${C_RESET}\n"
@@ -648,23 +1454,27 @@ cmd_doctor() {
     printf "  ${C_YELLOW}ℹ${C_RESET} %-14s %s\n" "Prompt Drift" "config says '$cfg_engine' but the running shell uses '$live_engine' -- run 'source ~/.zshrc' or open a new terminal"
   fi
 
-  if command -v fc-list >/dev/null 2>&1; then
-    local font_families
-    font_families="$(fc-list : family 2>/dev/null || true)"
-    if grep -qi "JetBrainsMono Nerd Font" <<< "$font_families"; then
-      printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font detected"
-      ((ok_count+=1))
-    else
-      printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font not found (run './install.sh --fonts')"
-      ((warn_count+=1))
+  if [[ "$check_fonts" == "1" ]]; then
+    if command -v fc-list >/dev/null 2>&1; then
+      local font_families
+      font_families="$(fc-list : family 2>/dev/null || true)"
+      if grep -qi "JetBrainsMono Nerd Font" <<< "$font_families"; then
+        printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font detected"
+        ((ok_count+=1))
+      else
+        printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Nerd Font" "JetBrainsMono Nerd Font not found (run './install.sh --fonts')"
+        ((warn_count+=1))
+      fi
+      if grep -qi "Noto Color Emoji" <<< "$font_families"; then
+        printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji detected"
+        ((ok_count+=1))
+      else
+        printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji not found"
+        ((warn_count+=1))
+      fi
     fi
-    if grep -qi "Noto Color Emoji" <<< "$font_families"; then
-      printf "  ${C_GREEN}✔${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji detected"
-      ((ok_count+=1))
-    else
-      printf "  ${C_YELLOW}✖${C_RESET} %-14s %s\n" "Emoji Font" "Noto Color Emoji not found"
-      ((warn_count+=1))
-    fi
+  else
+    printf "  ${C_BLUE}ℹ${C_RESET} %-14s %s\n" "Fonts" "Skipped for profile '${active_profile}' (client-rendered)"
   fi
 
   local login_shell
@@ -718,6 +1528,35 @@ cmd_bench() {
 # Command: update (Git Pull + Apply — safe for remote hosts, zero installs)
 # -----------------------------------------------------------------------------
 cmd_update() {
+  local check_only=0
+  local dry_run=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --check|-c) check_only=1; shift ;;
+      --dry-run|-n) dry_run=1; shift ;;
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        validate_cli_profile_override
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        validate_cli_profile_override
+        shift
+        ;;
+      *)
+        log_err "Unknown option for update: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  if (( check_only == 1 )); then
+    cmd_check_update
+    return $?
+  fi
+
   if [[ ! -d "$REPO_ROOT/.git" ]]; then
     log_err "Not a git repository: $REPO_ROOT"
     exit 1
@@ -746,9 +1585,15 @@ cmd_update() {
     git -C "$REPO_ROOT" log --oneline "${before_head}..${after_head}" | sed "s/^/    /"
   fi
 
-  # Apply all configs
+  refresh_update_cache_from_git "$(date +%s)"
+
+  # Apply active profile configs
   printf "\n"
-  cmd_apply all
+  if (( dry_run == 1 )); then
+    cmd_apply profile --dry-run
+  else
+    cmd_apply profile
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -799,20 +1644,40 @@ cmd_backup() {
 # Main Dispatcher
 # -----------------------------------------------------------------------------
 main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --profile)
+        CLI_PROFILE_OVERRIDE="${2:-}"
+        shift 2
+        ;;
+      --profile=*)
+        CLI_PROFILE_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  validate_cli_profile_override
+
   local cmd="${1:-status}"
   shift || true
 
   case "$cmd" in
-    status|st)       cmd_status "$@" ;;
-    diff|df)         cmd_diff "$@" ;;
-    collect|pull|capture) cmd_collect "$@" ;;
-    apply|push|deploy)    cmd_apply "$@" ;;
-    theme|th)        cmd_theme "$@" ;;
-    doctor|check)    cmd_doctor "$@" ;;
-    bench|benchmark) cmd_bench "$@" ;;
-    backup|bk)       cmd_backup "$@" ;;
-    update|up)       cmd_update "$@" ;;
-    -h|--help|help)  usage ;;
+    status|st)                 cmd_status "$@" ;;
+    diff|df)                   cmd_diff "$@" ;;
+    collect|pull|capture)      cmd_collect "$@" ;;
+    apply|push|deploy)         cmd_apply "$@" ;;
+    profile|pf)                cmd_profile "$@" ;;
+    check-update|check-updates) cmd_check_update "$@" ;;
+    theme|th)                  cmd_theme "$@" ;;
+    doctor|check)              cmd_doctor "$@" ;;
+    bench|benchmark)           cmd_bench "$@" ;;
+    backup|bk)                 cmd_backup "$@" ;;
+    update|up)                 cmd_update "$@" ;;
+    -h|--help|help)            usage ;;
     *)
       log_err "Unknown command: $cmd"
       usage

@@ -16,7 +16,7 @@ Configurações de terminal, temas, prompt e ferramentas modernas de linha de co
 
 ## Arquitetura de Sincronização (`dots`)
 
-Em vez de acoplar o `$HOME` a links simbólicos que quebram quando ferramentas reescrevem arquivos de configuração, este repositório utiliza um manifesto declarativo (`configs/manifest.tsv`) operado pela CLI [`bin/dots`](bin/dots):
+Em vez de acoplar o `$HOME` a links simbólicos que quebram quando ferramentas reescrevem arquivos de configuração, este repositório utiliza um manifesto declarativo (`configs/manifest.tsv`) e perfis de máquina (`configs/profiles.tsv`) operados pela CLI [`bin/dots`](bin/dots):
 
 ```mermaid
 flowchart LR
@@ -30,16 +30,19 @@ flowchart LR
         S["dots status / diff"]
         COL["dots collect (+ secret scan)"]
         APP["dots apply (+ auto backup)"]
+        PF["dots profile / check-update"]
     end
 
     subgraph Repo["Repositório (configs/)"]
         M["configs/manifest.tsv"]
+        P["configs/profiles.tsv"]
         R["configs/{zsh,konsole,prompts,atuin,micro,btop}"]
     end
 
     Live <-->|"cmp / git diff --no-index"| S <--> Repo
     Live -->|"captura melhorias locais"| COL --> Repo
-    Repo -->|"replica em qualquer máquina"| APP --> Live
+    Repo -->|"replica por perfil"| APP --> Live
+    PF -.->|"~/.config/dots/config"| APP
 ```
 
 ---
@@ -67,13 +70,21 @@ cd ~/Workspace/dotfiles
 ./install.sh --all
 ```
 
+O instalador detecta automaticamente o perfil sugerido para a máquina (`desktop`, `wsl`, `server` ou `minimal`), salva em `~/.config/dots/config` e ajusta pacotes, fontes e arquivos aplicados. Para forçar um perfil específico no bootstrap:
+
+```bash
+./install.sh --profile server    # Servidor SSH / headless (sem Konsole nem fontes)
+./install.sh --profile wsl       # WSL2 (CLI + Git Delta; fontes ficam no Windows)
+./install.sh --profile minimal   # Zero-sudo: apenas cli + apply (zsh, p10k, prompts, micro)
+```
+
 Você também pode executar etapas isoladas do instalador:
 
 ```bash
-./install.sh --packages   # Instala pacotes base (zsh, git, fzf, direnv, micro, btop, eza, gh, fastfetch)
+./install.sh --packages   # Instala pacotes base (omite fontconfig/emoji fora do perfil desktop)
 ./install.sh --cli        # Instala Zinit, Zoxide, Atuin, Starship e uv em ~/.local
 ./install.sh --fonts      # Baixa e instala a JetBrainsMono Nerd Font em ~/.local/share/fonts
-./install.sh --apply      # Linka 'dots' em ~/.local/bin/dots e aplica os configs no ~/
+./install.sh --apply      # Linka 'dots' em ~/.local/bin/dots e aplica os configs do perfil no ~/
 ./install.sh --shell      # Define /bin/zsh como login shell padrão do usuário (chsh)
 ```
 
@@ -81,31 +92,63 @@ Você também pode executar etapas isoladas do instalador:
 
 ## Uso Diário e Tracking de Melhorias (`dots`)
 
-O binário `dots` fica disponível globalmente em `~/.local/bin/dots` (e via aliases `dstatus`, `ddiff`, `dcollect`, `dapply`, `dtheme`, `ddoctor`, `dbench` no Zsh):
+O binário `dots` fica disponível globalmente em `~/.local/bin/dots` (e via aliases `dstatus`, `ddiff`, `dcollect`, `dapply`, `dupdate`, `dprofile`, `dcheck`, `dtheme`, `ddoctor`, `dbench` no Zsh):
 
 ### 1. Verificar estado de sincronização e diffs
 ```bash
-dots status               # Mostra tabela de sincronia (IN SYNC vs DRIFT local/repo)
+dots status               # Mostra tabela filtrada pelo perfil ativo + status do remote
+dots status all           # Mostra todos os componentes do manifesto ignorando o perfil
 dots diff                 # Exibe diff colorido entre o repositório e os arquivos ativos no ~/
 dots diff zsh             # Exibe diff apenas do componente zsh
 ```
 
-### 2. Capturar melhorias feitas na máquina para o Git (`collect`)
+### 2. Perfis de Máquina (`dots profile`)
+O estado local do perfil fica fora do Git em `~/.config/dots/config`, evitando conflitos entre workstation GUI, WSL2 e servidores SSH:
+
+| Perfil | Componentes | Etapas Bootstrap | Fontes no Host |
+| :--- | :--- | :--- | :--- |
+| **`desktop`** | `zsh,p10k,git,konsole,prompts,atuin,micro,btop,fastfetch` | `packages,cli,fonts,apply` | Sim |
+| **`wsl`** | `zsh,p10k,git,prompts,atuin,micro,btop,fastfetch` | `packages,cli,apply` | Não |
+| **`server`** | `zsh,p10k,git,prompts,atuin,micro,btop,fastfetch` | `packages,cli,apply` | Não |
+| **`minimal`** | `zsh,p10k,prompts,micro` | `cli,apply` | Não |
+
+```bash
+dots profile                    # Abre seletor interativo FZF (ou menu numerado sem FZF)
+dots profile list               # Lista perfis, ativo atual e sugestão auto-detectada
+dots profile set server --apply # Define perfil 'server' e aplica imediatamente
+dots profile auto --apply       # Detecta automaticamente (wsl/server/desktop) e aplica
+dots --profile desktop status   # Sobrescreve o perfil apenas para este comando
+```
+
+### 3. Update Checker e Sincronização Remota (`check-update` / `update`)
+Ao abrir um terminal Zsh interativo, um hook leve (`precmd`, 0ms no boot) lê o cache em `~/.cache/dots/update-check.env`: se houver commits novos em `origin`, exibe um aviso discreto de 1 linha sugerindo `dupdate`; se o cache tiver mais de **12h**, dispara `dots check-update --quiet` em background sem bloquear o shell nem interferir no Powerlevel10k Instant Prompt.
+
+```bash
+dots check-update               # Faz fetch imediato e mostra commits pendentes
+dots update --check             # Atalho equivalente para checar atualizações
+dots update                     # Puxa commits (pull --ff-only) e aplica configs do perfil
+dots check-update --interval 24 # Altera intervalo do check em background para 24h
+dots check-update --disable     # Desativa o check automático em background
+dots check-update --enable      # Reativa o check automático em background
+```
+
+### 4. Capturar melhorias feitas na máquina para o Git (`collect`)
 Sempre que você editar `~/.zshrc`, ajustar o Konsole ou mudar configurações locais:
 ```bash
 dots collect                                      # Copia do ~/ para configs/ + roda scanner anti-secrets
 dots collect -c "feat(zsh): new aliases" -p       # Coleta, faz commit e git push em um único comando
 ```
 
-### 3. Aplicar atualizações do repositório na máquina (`apply`)
+### 5. Aplicar atualizações do repositório na máquina (`apply`)
 Após dar `git pull` em outra máquina (ou restaurar configurações):
 ```bash
-dots apply                # Aplica todos os arquivos (cria backup automático antes de sobrescrever)
+dots apply                # Aplica todos os arquivos do perfil ativo (com backup automático)
+dots apply all            # Aplica todos os componentes do manifesto, incluindo Konsole
 dots apply konsole        # Aplica apenas o perfil e os temas do Konsole
 dots apply --dry-run      # Simula o que seria atualizado sem tocar no disco
 ```
 
-### 4. Trocar Tema do Konsole ou Motor de Prompt (`theme`)
+### 6. Trocar Tema do Konsole ou Motor de Prompt (`theme`)
 ```bash
 dots theme list                      # Lista todos os 18 esquemas de cores e prompts disponíveis
 dots theme konsole TokyoNight        # Muda o esquema de cores para TokyoNight imediatamente
@@ -114,9 +157,9 @@ dots theme prompt starship           # Alterna o prompt do Zsh para o Starship (
 dots theme prompt p10k               # Alterna o prompt do Zsh para o Powerlevel10k
 ```
 
-### 5. Diagnóstico, Benchmark de Boot e Backups
+### 7. Diagnóstico, Benchmark de Boot e Backups
 ```bash
-dots doctor               # Verifica binários, versões, fontes Nerd/Emoji, Zinit, engine do prompt e secrets
+dots doctor               # Verifica binários, versões, fontes (conforme perfil), Zinit e secrets
 dots bench 5              # Mede o tempo real de inicialização interativa do Zsh (ms) em 5 execuções
 dots backup list          # Lista snapshots automáticos salvos em ~/.local/share/dotfiles-backups/
 dots backup restore <id>  # Restaura um snapshot anterior
@@ -176,8 +219,6 @@ clean→green, modified→yellow, dir→blue, error→red…), não uma troca
 mecânica de índice. A paleta vem do `Solarized.colorscheme`; o script falha
 alto se algum role ficar sem mapeamento.
 
-```
-
 ---
 
 ## Estrutura do Repositório
@@ -185,9 +226,10 @@ alto se algum role ficar sem mapeamento.
 ```text
 .
 ├── bin/
-│   └── dots                         # CLI principal de gerenciamento (status, diff, collect, apply, theme, doctor, bench, backup)
+│   └── dots                         # CLI principal (status, diff, collect, apply, profile, check-update, update, theme, doctor, bench, backup)
 ├── configs/
 │   ├── manifest.tsv                 # Manifesto declarativo: <componente> <caminho-repo> <caminho-home> <descrição>
+│   ├── profiles.tsv                 # Definição dos perfis de máquina (desktop, wsl, server, minimal)
 │   ├── zsh/                         # .zshrc e .p10k.zsh
 │   ├── konsole/                     # konsolerc, zsh.profile, linux.keytab e 18 colorschemes/*.colorscheme
 │   ├── prompts/                     # starship.toml (Tactical), starship-classic.toml e spaceship.zsh
@@ -195,5 +237,5 @@ alto se algum role ficar sem mapeamento.
 │   ├── micro/                       # settings.json e bindings.json
 │   └── btop/                        # btop.conf
 ├── install.sh                       # Script idempotente de bootstrap multi-distro (Linux / WSL)
-└── Makefile                         # Atalhos make (make status, make diff, make collect, make apply, make doctor)
+└── Makefile                         # Atalhos make (make status, make profile, make check-update, make apply, make doctor)
 ```

@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 DOTS  := ./bin/dots
 
-.PHONY: help status diff collect apply theme doctor bench backup bootstrap fonts packages cli
+.PHONY: help status diff collect apply profile check-update update theme doctor bench backup bootstrap fonts packages cli
 
 help: ## Show available make targets
 	@awk 'BEGIN {FS = ":.*##"; printf "\n\033[1;35mdotfiles Makefile\033[0m\n\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 } END {printf "\n"}' $(MAKEFILE_LIST)
@@ -17,6 +17,15 @@ collect: ## Capture live configs from ~/ into repository
 
 apply: ## Apply repository configs to ~/ (with auto-backup)
 	@$(DOTS) apply
+
+profile: ## Select or inspect active machine profile (desktop/wsl/server/minimal)
+	@$(DOTS) profile
+
+check-update: ## Check upstream repository for new commits
+	@$(DOTS) check-update
+
+update: ## Pull latest from origin and apply active profile configs
+	@$(DOTS) update
 
 theme: ## List available Konsole colorschemes and Zsh prompts
 	@$(DOTS) theme list

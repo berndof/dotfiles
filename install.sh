@@ -27,23 +27,30 @@ ${C_BOLD}USAGE:${C_RESET}
   ./install.sh [flags]
 
 ${C_BOLD}FLAGS:${C_RESET}
-  --all        Run full setup: packages + cli tools + fonts + apply configs (default if no flags)
-  --packages   Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza, rg, fd, bat, delta, duf, ncdu, gh, fastfetch)
-  --cli        Install modern CLI tools in ~/.local/bin (zinit, zoxide, atuin, starship, uv, rg, fd, bat, delta, duf, ncdu)
-  --fonts      Install JetBrainsMono Nerd Font & Noto Color Emoji
-  --apply      Link 'dots' CLI into ~/.local/bin and apply tracked configs to ~/
-  --shell      Set Zsh as the default OS login shell (chsh)
-  -h, --help   Show this help message
+  --all                    Run profile default setup (default if no flags)
+  --profile <name>         Select machine profile: desktop, wsl, server, minimal
+  --packages               Install OS packages (zsh, git, curl, unzip, fzf, direnv, micro, btop, eza, rg, fd, bat, delta, duf, ncdu, gh, fastfetch)
+  --cli                    Install modern CLI tools in ~/.local/bin (zinit, zoxide, atuin, starship, uv, rg, fd, bat, delta, duf, ncdu)
+  --fonts                  Install JetBrainsMono Nerd Font & Noto Color Emoji
+  --apply                  Link 'dots' CLI into ~/.local/bin and apply profile configs to ~/
+  --shell                  Set Zsh as the default OS login shell (chsh)
+  -h, --help               Show this help message
 EOF
 }
 
 install_os_packages() {
+  local check_fonts
+  check_fonts="$("$DOTS_BIN" profile check-fonts 2>/dev/null || echo 1)"
+
   info "Checking and installing OS packages..."
   if command -v apt-get >/dev/null 2>&1; then
+    local apt_font_pkgs=()
+    [[ "$check_fonts" == "1" ]] && apt_font_pkgs=(fontconfig fonts-noto-color-emoji)
     sudo apt-get update -qq
     sudo apt-get install -y \
-      zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop ripgrep fd-find bat duf ncdu fonts-noto-color-emoji
+      zsh git curl wget unzip \
+      fzf direnv micro btop ripgrep fd-find bat duf ncdu \
+      ${apt_font_pkgs[@]+"${apt_font_pkgs[@]}"}
 
     # git-delta on Ubuntu 24.04+ / Debian 13+
     sudo apt-get install -y git-delta 2>/dev/null || true
@@ -65,13 +72,19 @@ install_os_packages() {
     command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 && ln -sfn "$(command -v fdfind)" "$HOME/.local/bin/fd"
     command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1 && ln -sfn "$(command -v batcat)" "$HOME/.local/bin/bat"
   elif command -v pacman >/dev/null 2>&1; then
+    local pacman_font_pkgs=()
+    [[ "$check_fonts" == "1" ]] && pacman_font_pkgs=(fontconfig noto-fonts-emoji)
     sudo pacman -Sy --needed --noconfirm \
-      zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop eza ripgrep fd bat git-delta duf ncdu noto-fonts-emoji
+      zsh git curl wget unzip \
+      fzf direnv micro btop eza ripgrep fd bat git-delta duf ncdu \
+      ${pacman_font_pkgs[@]+"${pacman_font_pkgs[@]}"}
   elif command -v dnf >/dev/null 2>&1; then
+    local dnf_font_pkgs=()
+    [[ "$check_fonts" == "1" ]] && dnf_font_pkgs=(fontconfig google-noto-emoji-color-fonts)
     sudo dnf install -y \
-      zsh git curl wget unzip fontconfig \
-      fzf direnv micro btop eza ripgrep fd-find bat git-delta duf ncdu google-noto-emoji-color-fonts
+      zsh git curl wget unzip \
+      fzf direnv micro btop eza ripgrep fd-find bat git-delta duf ncdu \
+      ${dnf_font_pkgs[@]+"${dnf_font_pkgs[@]}"}
   else
     warn "Unsupported package manager. Falling back to user-space binary installation (--cli)."
   fi
@@ -340,25 +353,75 @@ configure_default_shell() {
   fi
 }
 
+resolve_install_profile() {
+  local req_profile="$1"
+  local interactive_allowed="$2"
+  local dots_config_file="${XDG_CONFIG_HOME:-$HOME/.config}/dots/config"
+  local has_saved=0
+
+  if [[ -f "$dots_config_file" ]] && grep -qE '^PROFILE=[a-z]+' "$dots_config_file" 2>/dev/null; then
+    has_saved=1
+  fi
+
+  if [[ -n "$req_profile" ]]; then
+    "$DOTS_BIN" profile set "$req_profile"
+  elif (( has_saved == 0 )); then
+    local suggested chosen=""
+    suggested="$("$DOTS_BIN" profile get)"
+    if (( interactive_allowed == 1 )) && [[ -t 0 && -t 1 ]]; then
+      printf "\n"
+      read -r -p "[BOOTSTRAP] Detected profile '${suggested}'. Press Enter to confirm or choose [desktop/wsl/server/minimal]: " chosen
+      chosen="${chosen:-$suggested}"
+      "$DOTS_BIN" profile set "$chosen"
+    else
+      "$DOTS_BIN" profile set "$suggested"
+    fi
+  fi
+}
+
 main() {
   local do_pkg=0 do_cli=0 do_fonts=0 do_apply=0 do_shell=0
-
-  if [[ $# -eq 0 ]]; then
-    do_pkg=1 do_cli=1 do_fonts=1 do_apply=1
-  fi
+  local do_all=0 explicit_step=0 req_profile=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --all)      do_pkg=1 do_cli=1 do_fonts=1 do_apply=1; shift ;;
-      --packages) do_pkg=1; shift ;;
-      --cli)      do_cli=1; shift ;;
-      --fonts)    do_fonts=1; shift ;;
-      --apply)    do_apply=1; shift ;;
-      --shell)    do_shell=1; shift ;;
-      -h|--help)  usage; exit 0 ;;
-      *)          warn "Unknown option: $1"; usage; exit 1 ;;
+      --all)       do_all=1; shift ;;
+      --profile)
+        if [[ -z "${2:-}" ]]; then
+          warn "Missing value for --profile"
+          usage
+          exit 1
+        fi
+        req_profile="$2"
+        shift 2
+        ;;
+      --profile=*)
+        req_profile="${1#*=}"
+        shift
+        ;;
+      --packages)  do_pkg=1; explicit_step=1; shift ;;
+      --cli)       do_cli=1; explicit_step=1; shift ;;
+      --fonts)     do_fonts=1; explicit_step=1; shift ;;
+      --apply)     do_apply=1; explicit_step=1; shift ;;
+      --shell)     do_shell=1; explicit_step=1; shift ;;
+      -h|--help)   usage; exit 0 ;;
+      *)           warn "Unknown option: $1"; usage; exit 1 ;;
     esac
   done
+
+  if (( do_all == 1 || explicit_step == 0 )); then
+    resolve_install_profile "$req_profile" 1
+    local profile_flags
+    profile_flags="$("$DOTS_BIN" profile flags)"
+    [[ ",${profile_flags}," == *",packages,"* ]] && do_pkg=1
+    [[ ",${profile_flags}," == *",cli,"* ]]      && do_cli=1
+    [[ ",${profile_flags}," == *",fonts,"* ]]    && do_fonts=1
+    [[ ",${profile_flags}," == *",apply,"* ]]    && do_apply=1
+  elif [[ -n "$req_profile" ]]; then
+    resolve_install_profile "$req_profile" 0
+  fi
+
+  info "Active bootstrap profile: $("$DOTS_BIN" profile get)"
 
   (( do_pkg == 1 ))   && install_os_packages
   (( do_cli == 1 ))   && install_cli_tools

@@ -172,7 +172,7 @@ alias ff="fastfetch"
 # 'source ~/.zshrc' manual. Processo filho nao alcanca o shell pai, por isso a
 # recarga precisa morar aqui e nao no binario.
 dots() {
-  local _bin="$HOME/Workspace/dotfiles/bin/dots"
+  local _bin="${commands[dots]:-$HOME/Workspace/dotfiles/bin/dots}"
   local _tracked=("$HOME/.zshrc" "$HOME/.p10k.zsh")
   local _before="" _after="" _f _rc
   for _f in "${_tracked[@]}"; do
@@ -194,6 +194,8 @@ alias ddiff="dots diff"
 alias dcollect="dots collect"
 alias dapply="dots apply"
 alias dupdate="dots update"
+alias dprofile="dots profile"
+alias dcheck="dots check-update"
 alias dtheme="dots theme"
 alias ddoctor="dots doctor"
 alias dbench="dots bench"
@@ -201,4 +203,76 @@ alias dbench="dots bench"
 # OpenCode & Remoto
 alias oc-remote="oc-remote"
 alias ocd="oc-remote"
+
+# -----------------------------------------------------------------------------
+# 10. Update Checker Silencioso de Dotfiles (0ms no boot, cache 12h via precmd)
+# -----------------------------------------------------------------------------
+if [[ -o interactive && -t 1 && -z "${ZSH_EXECUTION_STRING:-}" && "${DOTS_NO_UPDATE_CHECK:-0}" != "1" ]]; then
+  _dots_startup_update_hook() {
+    precmd_functions=(${precmd_functions:#_dots_startup_update_hook})
+    unfunction _dots_startup_update_hook 2>/dev/null
+
+    local _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/dots/config"
+    local _cache="${XDG_CACHE_HOME:-$HOME/.cache}/dots/update-check.env"
+    local _enabled=1 _interval_h=12 _k _v
+
+    if [[ -r "$_cfg" ]]; then
+      while IFS='=' read -r _k _v; do
+        case "$_k" in
+          UPDATE_CHECK) [[ -n "$_v" ]] && _enabled="$_v" ;;
+          UPDATE_INTERVAL_HOURS) [[ "$_v" == <-> && "$_v" -gt 0 ]] && _interval_h="$_v" ;;
+        esac
+      done < "$_cfg"
+    fi
+    [[ "$_enabled" == "0" ]] && return 0
+
+    local _last=0 _behind=0 _ahead=0 _subj="" _cached_head="" _repo=""
+    if [[ -r "$_cache" ]]; then
+      while IFS='=' read -r _k _v; do
+        case "$_k" in
+          LAST_CHECK_EPOCH) [[ "$_v" == <-> ]] && _last="$_v" ;;
+          REMOTE_BEHIND)    [[ "$_v" == <-> ]] && _behind="$_v" ;;
+          REMOTE_AHEAD)     [[ "$_v" == <-> ]] && _ahead="$_v" ;;
+          LATEST_SUBJECT)   _subj="$_v" ;;
+          LOCAL_HEAD)       _cached_head="$_v" ;;
+          REPO_ROOT)        _repo="$_v" ;;
+        esac
+      done < "$_cache"
+    fi
+
+    # Valida cache contra .git/HEAD local sem spawnar git (0 forks):
+    # se o usuario ja deu git pull manualmente, suprime o banner obsoleto.
+    if (( _behind > 0 )) && [[ -n "$_repo" && -r "$_repo/.git/HEAD" ]]; then
+      local _head_raw="" _live_head=""
+      IFS= read -r _head_raw < "$_repo/.git/HEAD"
+      if [[ "$_head_raw" == ref:\ * ]]; then
+        local _ref="${_head_raw#ref: }"
+        [[ -r "$_repo/.git/$_ref" ]] && IFS= read -r _live_head < "$_repo/.git/$_ref"
+      else
+        _live_head="$_head_raw"
+      fi
+      if [[ -n "$_live_head" && -n "$_cached_head" && "$_live_head" != "$_cached_head" ]]; then
+        _behind=0
+        _ahead=0
+        _last=0
+      fi
+    fi
+
+    if (( _behind > 0 && _ahead > 0 )); then
+      printf '\033[38;5;215m⚡ dotfiles:\033[0m branch divergiu do origin (%d local, %d remoto) — rode \033[38;5;117mdstatus\033[0m\n' \
+        "$_ahead" "$_behind"
+    elif (( _behind > 0 )); then
+      printf '\033[38;5;215m⚡ dotfiles:\033[0m %d atualização(ões) disponível(is)%s — rode \033[38;5;117mdupdate\033[0m\n' \
+        "$_behind" "${_subj:+ ($_subj)}"
+    fi
+
+    zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null || return 0
+    if (( EPOCHSECONDS - _last >= _interval_h * 3600 )); then
+      local _bin="${commands[dots]:-$HOME/Workspace/dotfiles/bin/dots}"
+      [[ -x "$_bin" ]] && { "$_bin" check-update --quiet </dev/null >/dev/null 2>&1 &! }
+    fi
+  }
+
+  (( ${precmd_functions[(Ie)_dots_startup_update_hook]:-0} )) || precmd_functions+=(_dots_startup_update_hook)
+fi
 

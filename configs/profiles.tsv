@@ -1,0 +1,5 @@
+# Profile	Components	BootstrapFlags	CheckFonts	Description
+desktop	zsh,p10k,git,konsole,prompts,atuin,micro,btop,fastfetch	packages,cli,fonts,apply	1	Full Linux GUI workstation (KDE Konsole, Nerd Fonts & full CLI stack)
+wsl	zsh,p10k,git,prompts,atuin,micro,btop,fastfetch	packages,cli,apply	0	WSL2 workstation (full CLI + Git Delta; fonts rendered by Windows host)
+server	zsh,p10k,git,prompts,atuin,micro,btop,fastfetch	packages,cli,apply	0	Remote SSH / headless server (full CLI + Git Delta; no GUI/Konsole/fonts)
+minimal	zsh,p10k,prompts,micro	cli,apply	0	Zero-sudo lightweight setup (Zsh + P10k + user-space CLI binaries only)
